@@ -1,0 +1,36 @@
+{
+  "apk": "VLC-3.7.2-pause-diag1-arm64-v8a.apk",
+  "bytes": 49690820,
+  "sha256": "9890f1f03a2d3b89250023916e98ef8d544ecb72ed72e22325a35f92ec0e8adb",
+  "package": "org.videolan.vlc.aaudio",
+  "version_name": "3.7.2-pause-diag1",
+  "version_code": 13070201,
+  "abi": "arm64-v8a",
+  "core_version": "3.0.25",
+  "native_sha256": {
+    "libvlc.so": "b09df80205424a7173ef6560315d79b7de3158b2d16d692aa9e16b48d3cbc7e4",
+    "libvlcjni.so": "6f1242e487875404e44e75ed1e2d3bcd7bf9715ff01cd9429c70d24af635e888",
+    "libc++_shared.so": "f9992c4ba6b7c5a716e3a202fceb1ce029d6a2b0605838ac6b3219f489dd7970",
+    "libmla.so": "423c9cc37c780fec209d1f6243cecb0feff60bd435176d8049a64c13aaf035c9"
+  },
+  "updates_previous_personal_build": true,
+  "purpose": "Pause/resume diagnosis; no synchronization behavior change",
+  "diagnostic_window_seconds": 5,
+  "max_samples_per_resume_per_stage": 32,
+  "max_audio_correction_events_per_resume": 48,
+  "app_commit": "e5740f713d995f6c8e7d92e64134abc3a3b6987d",
+  "jni_commit": "0b8dc65efb203c86a0476bc337ddd99ecf1c0ef6",
+  "core_commit_before_android_patches": "84177b2273abc5c4300234e6e18b55a4d2dd5a03",
+  "checks": [
+    "Release assembly and lint",
+    "APK signature v2",
+    "same signing certificate",
+    "increased version code",
+    "16KB ZIP alignment",
+    "arm64 ELF",
+    "custom native library hashes",
+    "diagnostic markers",
+    "unchanged medialibrary/runtime"
+  ],
+  "device_tested": false
+}

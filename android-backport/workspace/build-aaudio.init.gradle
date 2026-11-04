@@ -1,0 +1,23 @@
+// Use the rebuilt stable LibVLC throughout the release dependency graph.
+gradle.afterProject { p ->
+    if (p == p.rootProject) {
+        // Independently signed APK; install alongside the official app.
+        p.ext.appId = 'org.videolan.vlc.aaudio'
+        p.ext.versionName = '3.7.2-aaudio'
+    }
+    if (p.path == ':libvlcjni:libvlc') {
+        p.tasks.matching { it.name.toLowerCase().contains('lint') }.configureEach {
+            dependsOn 'hrtfsCopy', 'luaPlaylistCopy', 'luaMetaCopy', 'luaModuleCopy'
+        }
+    }
+}
+gradle.beforeProject { p ->
+    p.plugins.withId('com.android.application') {
+        p.android.defaultConfig.ndk.abiFilters.add('arm64-v8a')
+    }
+    p.configurations.configureEach {
+        resolutionStrategy.dependencySubstitution {
+            substitute module('org.videolan.android:libvlc-all') using project(':libvlcjni:libvlc')
+        }
+    }
+}

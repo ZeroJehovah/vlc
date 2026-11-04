@@ -1,0 +1,28 @@
+{
+  "apk": "VLC-3.7.2-AAudio-arm64-v8a.apk",
+  "bytes": 49690820,
+  "sha256": "13e3261fd4e2616e781e42b256e3d3e828bf150743a1c784c9104b6aa40c445a",
+  "package": "org.videolan.vlc.aaudio",
+  "version_name": "3.7.2-aaudio",
+  "abi": "arm64-v8a",
+  "core_version": "3.0.25",
+  "aaudio_min_api": 28,
+  "native_sha256": {
+    "libvlc.so": "fa6e018b23f7b75a419a2a30dac2a6424d56699fe714d325c317857141c6bd6b",
+    "libvlcjni.so": "6f1242e487875404e44e75ed1e2d3bcd7bf9715ff01cd9429c70d24af635e888",
+    "libc++_shared.so": "f9992c4ba6b7c5a716e3a202fceb1ce029d6a2b0605838ac6b3219f489dd7970",
+    "libmla.so": "423c9cc37c780fec209d1f6243cecb0feff60bd435176d8049a64c13aaf035c9"
+  },
+  "app_commit": "e5740f713d995f6c8e7d92e64134abc3a3b6987d",
+  "jni_commit": "0b8dc65efb203c86a0476bc337ddd99ecf1c0ef6",
+  "core_commit_before_android_patches": "84177b2273abc5c4300234e6e18b55a4d2dd5a03",
+  "checks": [
+    "APK signature v2",
+    "16KB ZIP alignment",
+    "arm64 ELF",
+    "custom native library hashes",
+    "AAudio descriptor",
+    "LibVLC 3 version"
+  ],
+  "device_tested": false
+}

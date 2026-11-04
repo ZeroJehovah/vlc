@@ -1,0 +1,26 @@
+diff --git a/buildsystem/compile-libvlc.sh b/buildsystem/compile-libvlc.sh
+index b67c1e6..02cf867 100755
+--- a/buildsystem/compile-libvlc.sh
++++ b/buildsystem/compile-libvlc.sh
+@@ -622,7 +622,7 @@ if [ ! -e $VLC_BUILD_DIR/config.h -o "$AVLC_RELEASE" = 1 ]; then
+     PKG_CONFIG_LIBDIR=$VLC_SRC_DIR/contrib/$TARGET_TUPLE/lib/pkgconfig \
+     PKG_CONFIG_PATH=$VLC_SRC_DIR/contrib/$TARGET_TUPLE/lib/pkgconfig \
+     PATH=../contrib/bin:$PATH \
+-    sh ../configure --host=$TARGET_TUPLE --build=x86_64-unknown-linux \
++    sh ../configure --host=$TARGET_TUPLE --build=$(gcc -dumpmachine) \
+         --with-contrib=${VLC_SRC_DIR}/contrib/${TARGET_TUPLE} \
+         --prefix=${VLC_BUILD_DIR}/install/ \
+         ${EXTRA_PARAMS} ${VLC_CONFIGURE_ARGS} ${VLC_CONFIGURE_DEBUG} \
+diff --git a/libvlc/jni/Android.mk b/libvlc/jni/Android.mk
+index 7068558..9829d20 100644
+--- a/libvlc/jni/Android.mk
++++ b/libvlc/jni/Android.mk
+@@ -25,6 +25,8 @@ LOCAL_SRC_FILES := $(VLC_BUILD_DIR)/ndk/libvlcjni-modules.c \
+ 				   $(VLC_BUILD_DIR)/ndk/libvlcjni-symbols.c \
+ 				   $(VLC_BUILD_DIR)/ndk/dummy.cpp
+ LOCAL_HAS_CPP := true
++# Plugin archives passed in LDLIBS are otherwise invisible to incremental make.
++LOCAL_ADDITIONAL_DEPENDENCIES := $(VLC_MODULES)
+ LOCAL_LDFLAGS := -L$(VLC_CONTRIB)/lib
+ LOCAL_LDLIBS := \
+     $(VLC_MODULES) \
