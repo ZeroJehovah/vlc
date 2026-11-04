@@ -60,7 +60,13 @@
       "cycle_3": 573239,
       "cycle_4": 434412
     },
-    "av_sync_subjectively_verified": false
+    "av_sync_subjectively_verified": false,
+    "later_follow_up": {
+      "date": "2026-11-04",
+      "severe_av_desync_observed": true,
+      "audible_gap_observed": false,
+      "note": "At least one playback scene showed severe audio/video desynchronization after pause and resume despite the absence of the earlier audible gap."
+    }
   },
   "device_tested": true
 }

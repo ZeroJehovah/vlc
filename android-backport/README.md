@@ -9,8 +9,9 @@
 3. AudioTrack 恢复时唤醒音频发送线程，避免队列已有声音却等下一批解码数据才继续发送。添加两条诊断，记录恢复唤醒和首次发送之间的耗时。
 4. AudioTrack 在厂商实现中可能于蓝牙路由恢复时让“非阻塞”写入阻塞约 384ms。新版在进入 Java 写入前检查内部缓冲的已播放位置，满缓冲时不调用写入，并在单次调用超过 50ms 时记录耗时。
 5. 暂停恢复后的短窗口内，播放头估时暂时失真时不再按单次读数清空音频或补入静音，而由已有重采样器逐步收敛；连续稳定后恢复 VLC 3 原有同步规则。显式 flush、seek 和输出重启会退出恢复状态。
+6. 将 API 23 `WRITE_BYTEARRAYV23` 的厂商写入从播放器生产锁中解耦：发送线程先把一块 PCM 暂存到私有 staging 区并释放 `p_sys->lock`，再调用可能阻塞的 Java `AudioTrack.write()`；另用 `write_lock` 串行化 pause/play/flush。generation 和 `i_samples_inflight` 负责 flush 失效及时间估算。
 
-第 3、4 项已由实际手机日志推动实施；修复版 2 的真机日志确认写入阻塞消失，但播放头估时瞬态仍触发破坏性纠偏。视频继续而只有声音中断，进一步把问题定位到 VLC 3 的音频同步分支。修复版 3 的首轮真机测试中，四次暂停恢复均未再清空音频或补入静音，用户也未再听到此前约一秒的中断。后三次恢复仍有数百毫秒的估时偏差在缓慢收敛，实际音画同步尚待稳定口型画面复核；未移植 VLC 4 的整体时钟架构。证据和限制见 [诊断说明](diagnosis.md)。
+第 3、4 项已由实际手机日志推动实施；修复版 2 的真机日志确认先前的满缓冲写入被避开，但播放头估时瞬态仍触发破坏性纠偏。修复版 3 消除了四次恢复中的清空/补静音，用户也未再听到此前约一秒的中断；但后续测试发现过一次严重音画不同步。修复版 3 日志中仍有厂商写入阻塞 **566–582ms**，且该写入持有生产锁，解码音频无法及时进入软件队列。修复版 4 因此解除这把锁的耦合，同时保留修复版 3 的非破坏恢复逻辑。它尚未经过真机确认，不能宣称问题已经解决。证据和限制见 [诊断说明](diagnosis.md)。
 
 ## 仓库内容
 
@@ -18,7 +19,7 @@
 - `patches/vlc-android.patch`：Android 应用完整改动，包含新增资源和 Java 文件。
 - `patches/libvlcjni.patch`：ARM 构建主机适配，以及让插件静态库变更触发重新链接的依赖声明。
 - `tests/`：实际 AudioTrack 模块的原生回归测试。
-- `workspace/`：现有工作区的构建脚本、AAudio 和日志预览测试、主机适配工具、先前版本的公开构建校验记录。将其复制到下述工作区根目录使用。
+- `workspace/`：现有工作区的构建脚本、AAudio 和日志预览测试、主机适配工具、各版本的公开构建校验脚本。将其复制到下述工作区根目录使用。
 
 签名私钥、签名密码、原始手机日志、SDK/NDK、二进制构建产物均不提交。签名材料须独立安全备份；仅恢复 Git 仓库不能恢复原来的 APK 签名身份。
 
@@ -86,27 +87,29 @@ sh link-native.sh -B
 cd /home/ubuntu/vlc-aaudio/app-stable
 JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 \
   ../toolchain/gradle-9.3.1/bin/gradle \
-  -I ../build-resume-fix3.init.gradle \
+  -I ../build-resume-fix4.init.gradle \
   -Pandroid.aapt2FromMavenOverride=/home/ubuntu/vlc-aaudio/toolchain/host-tools/aapt2 \
   :application:app:assembleRelease --console=plain --max-workers=3
 cd /home/ubuntu/vlc-aaudio
-python3 package-resume-fix3.py
+python3 package-resume-fix4.py
 ```
 
-打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前包：`3.7.2-resume-fix3`、versionCode `13070205`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
+打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前实验包：`3.7.2-resume-fix4`、versionCode `13070206`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
 
 ## 验证
 
 ```sh
 cd /home/ubuntu/vlc-aaudio/libvlcjni/vlc
 sh android-backport/tests/test-audiotrack-resume.sh
+sh android-backport/tests/test-audiotrack-write-lock.sh
+sh android-backport/tests/test-aout-resume-recovery.sh
 cd /home/ubuntu/vlc-aaudio
 sh test-aaudio.sh
 sh test-logger/run.sh
 ```
 
-AudioTrack 测试支持 `VLC_CORE_DIR`、`VLC_NDK_DIR`、`JAVA_HOME`、`TEST_OUTPUT` 和 `CC` 覆盖路径。负对照确认旧源码在队列已有 200ms PCM 时仍会等待后续信号；修复后 20 次均无需新解码数据就能发出完整 PCM，通过 ASan/UBSan。模拟 JNI 的测试无法证明手机厂商音频栈上的卡顿已经解决。
+AudioTrack 测试支持 `VLC_CORE_DIR`、`VLC_NDK_DIR`、`JAVA_HOME`、`TEST_OUTPUT` 和 `CC` 覆盖路径。恢复测试的负对照确认旧源码在队列已有 200ms PCM 时仍会等待后续信号；修复后 20 次均无需新解码数据就能发出完整 PCM。写入解耦测试让厂商 `write()` 故意阻塞 150ms：修复版 3 会让生产者全程等待，修复版 4 可在阻塞期间继续入队；另验证单次 partial write 后发生 Stop 时，非空 staging 不会令发送线程空转。两者均通过 ASan/UBSan。核心同步决策测试直接调用实际 `aout_DecSynchronize()`。模拟 JNI 的测试不能证明手机厂商音频栈上的问题已经解决。
 
-手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。重点观察 `defer_flush_resume`、`defer_silence_resume`、`resample_up` / `resample_down`、`resume_recovery_end`，以及恢复窗口之后是否仍有 `flush_late` / `insert_silence`；同时确认声音是否连续，以及是否出现可见的音画不同步。
+手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。重点观察 `staged_write blocked_us`、`backend_play call_us`、`defer_flush_resume`、`defer_silence_resume`、`resample_up` / `resample_down`、`resume_recovery_end`，以及恢复窗口之后是否仍有 `flush_late` / `insert_silence`；同时用正脸说话画面确认声音连续且口型没有明显错位。
 
-`releases/resume-fix3.json` 保存当前交付 APK 的 SHA-256、原生库哈希、播放源码提交、校验项目和首轮真机结果；APK 本身保存在构建工作区 `artifacts/resume-fix3/`。实际 `dec.c` 同步路径的 sanitizer 测试、Release 编译、lint、覆盖升级签名身份、实际打包的三条恢复标记与日志服务声明均已检查。首轮真机测试没有破坏性纠偏并消除了可闻中断，但持续估时偏差的最终音画同步仍需复核。
+`releases/resume-fix3.json` 保留修复版 3 的构建与真机记录；`releases/resume-fix4.json` 保存当前实验包的 SHA-256、原生库哈希、播放源码提交和自动校验项目。APK 本身保存在构建工作区 `artifacts/resume-fix4/`。修复版 4 的 Release 编译、lint、覆盖升级签名身份、打包标记、恢复测试和写入解耦测试均已通过，但 `device_tested` 为 `false`，必须由手机实测决定下一轮方向。
