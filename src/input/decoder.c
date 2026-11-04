@@ -1341,8 +1341,23 @@ static void DecoderPlaySpu( decoder_t *p_dec, subpicture_t *p_subpic )
                   NULL, INT64_MAX );
     vlc_mutex_unlock( &p_owner->lock );
 
+    /* Decoder-generated menus use the OSD/system domain in the 3.x SPU
+     * renderer. Ordinary subtitles stay in media time for their updater. */
+    const bool media_subtitle = p_owner->output_clock && p_subpic->b_subtitle;
+    if( p_owner->output_clock && !p_subpic->b_subtitle )
+    {
+        const double rate = (double)INPUT_RATE_DEFAULT /
+                            input_clock_GetRate( p_owner->p_clock );
+        vlc_clock_Lock( p_owner->output_clock );
+        p_subpic->i_start = vlc_clock_ConvertToSystem( p_owner->output_clock,
+            mdate(), p_subpic->i_start, rate, NULL );
+        if( p_subpic->i_stop > VLC_TICK_INVALID )
+            p_subpic->i_stop = vlc_clock_ConvertToSystem( p_owner->output_clock,
+                mdate(), p_subpic->i_stop, rate, NULL );
+        vlc_clock_Unlock( p_owner->output_clock );
+    }
     if( p_subpic->i_start <= VLC_TICK_INVALID
-     || DecoderTimedWait( p_dec, (p_owner->output_clock
+     || DecoderTimedWait( p_dec, (media_subtitle
                                   ? DecoderGetDisplayDate( p_dec, p_subpic->i_start )
                                   : p_subpic->i_start) - SPU_MAX_PREPARE_TIME ) )
     {

@@ -1872,10 +1872,14 @@ static void AudioTrack_ReportTiming( JNIEnv *env, audio_output_t *aout )
         uint32_t frame = (uint32_t)JNI_AUDIOTIMESTAMP_GET_LONG( framePosition );
         if( !frame || system < p_sys->timing.cutoff )
             return;
-        if( frame < p_sys->timing.last )
-            p_sys->timing.wraps++;
+        const uint32_t wraps = p_sys->timing.wraps + (frame < p_sys->timing.last);
+        position = frame + ((uint64_t)wraps << 32);
+        /* An invalid future position must not poison wrap detection for the
+         * next valid timestamp, which can have a smaller frame counter. */
+        if( position > p_sys->i_samples_written )
+            return;
         p_sys->timing.last = frame;
-        position = frame + ((uint64_t)p_sys->timing.wraps << 32);
+        p_sys->timing.wraps = wraps;
     }
     else
     {

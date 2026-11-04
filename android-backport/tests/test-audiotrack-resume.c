@@ -62,11 +62,11 @@ static void TestDeviceTiming(JNIEnv *env)
     sys.timing.next_query = 0;
     AudioTrack_ReportTiming(env, &a);
     assert(timing_reports == 0); /* cannot report unsent audio */
-    timestamp_frame = 97000;
+    timestamp_frame = 48000;
     sys.i_samples_written = 100000;
     sys.timing.next_query = 0;
     AudioTrack_ReportTiming(env, &a);
-    assert(timing_reports == 1 && reported_position == 97000);
+    assert(timing_reports == 1 && reported_position == 48000);
     assert(reported_date == timestamp_ns / 1000); /* use device date, not now */
     sys.b_thread_paused = true;
     sys.timing.next_query = 0;
