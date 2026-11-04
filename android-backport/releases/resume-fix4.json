@@ -42,7 +42,10 @@
     "vendor write stall cannot hold the AudioTrack producer lock",
     "partial staged AudioTrack write exits cleanly on stop",
     "packaged logger service declares dataSync and specialUse",
-    "logger repair code in DEX"
+    "logger repair code in DEX",
+    "device log: no staged write block; persistent 333-953 ms resume drift",
+    "device result: no dropout, but A/V latency remained until seek"
   ],
-  "device_tested": false
+  "device_tested": true,
+  "device_result": "failed: persistent audio lag after resume; seek restored sync"
 }
