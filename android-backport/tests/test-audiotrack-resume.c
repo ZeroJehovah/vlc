@@ -49,6 +49,12 @@ void vlc_Log(vlc_object_t *o, int priority, const char *module, const char *file
 { (void)o; (void)priority; (void)module; (void)file; (void)line; (void)function; (void)format; }
 
 static jboolean MockExceptionCheck(JNIEnv *env) { (void)env; return JNI_FALSE; }
+static void MockGetByteArrayRegion(JNIEnv *env, jbyteArray array, jsize start,
+                                   jsize len, jbyte *buf)
+{ (void)env; (void)array; (void)start; (void)len; (void)buf; }
+static void MockSetByteArrayRegion(JNIEnv *env, jbyteArray array, jsize start,
+                                   jsize len, const jbyte *buf)
+{ (void)env; (void)array; (void)start; (void)len; (void)buf; }
 static void MockCallVoid(JNIEnv *env, jobject obj, jmethodID method, ...)
 {
     (void)env; (void)obj;
@@ -76,6 +82,8 @@ static jint MockCallInt(JNIEnv *env, jobject obj, jmethodID method, ...)
 }
 static const struct JNINativeInterface_ jni = {
     .ExceptionCheck = MockExceptionCheck,
+    .GetByteArrayRegion = MockGetByteArrayRegion,
+    .SetByteArrayRegion = MockSetByteArrayRegion,
     .CallVoidMethod = MockCallVoid,
     .CallIntMethod = MockCallInt,
 };
@@ -138,8 +146,16 @@ int main(int argc, char **argv)
         sys.i_max_audiotrack_samples = 38400;
         sys.circular.i_size = 38400;
         sys.circular.i_write = 38400; /* 200 ms already queued before pause */
+#ifdef EXPECT_V23_BUFFER_GUARD
+        sys.staging.p_data = calloc(1, sys.circular.i_size);
+        assert(sys.staging.p_data);
+        sys.staging.i_size = sys.circular.i_size;
+#endif
         sys.b_thread_running = true;
         vlc_mutex_init(&sys.lock);
+#ifdef EXPECT_V23_BUFFER_GUARD
+        vlc_mutex_init(&sys.write_lock);
+#endif
         vlc_cond_init(&sys.thread_cond);
         vlc_cond_init(&sys.aout_cond);
         Pause(&aout, true, mdate());
@@ -164,8 +180,14 @@ int main(int argc, char **argv)
         vlc_mutex_unlock(&sys.lock);
         assert(pthread_join(worker, NULL) == 0);
         assert(bytes_written == 38400);
+#ifdef EXPECT_V23_BUFFER_GUARD
+        free(sys.staging.p_data);
+#endif
         vlc_cond_destroy(&sys.aout_cond);
         vlc_cond_destroy(&sys.thread_cond);
+#ifdef EXPECT_V23_BUFFER_GUARD
+        vlc_mutex_destroy(&sys.write_lock);
+#endif
         vlc_mutex_destroy(&sys.lock);
     }
     puts(old ? "PASS: original source stalls with queued PCM until an unrelated later signal"

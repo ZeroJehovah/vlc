@@ -137,6 +137,7 @@ struct aout_sys_t {
 
     vlc_thread_t thread;    /* AudioTrack_Thread */
     vlc_mutex_t lock;
+    vlc_mutex_t write_lock; /* Serialize Java playback calls, never held while producing */
     vlc_cond_t aout_cond;   /* cond owned by aout */
     vlc_cond_t thread_cond; /* cond owned by AudioTrack_Thread */
 
@@ -146,11 +147,26 @@ struct aout_sys_t {
                              * Pause() */
     bool b_thread_waiting;  /* If true, the thread is waiting for enough spaces
                              * in AudioTrack internal buffers */
+    bool b_backend_paused;  /* Playback is paused or pause/resume is in flight */
+    bool b_flushing;        /* Flush invalidates a staged write */
     vlc_tick_t i_resume_notify; /* diagnostic: first writer activity on resume */
 
     uint64_t i_samples_written; /* Number of samples written since last flush */
+    uint64_t i_samples_inflight; /* Samples copied out but not yet written */
+    uint32_t i_write_generation; /* Invalidates data staged before Flush() */
     bool b_audiotrack_exception; /* True if audiotrack threw an exception */
     bool b_error; /* generic error */
+
+    /* One chunk copied out of the Java circular array so AudioTrack.write()
+     * can run without p_sys->lock. Only AudioTrack_Thread touches it. */
+    struct {
+        jbyteArray p_bytearray;
+        uint8_t *p_data;
+        size_t i_size;
+        size_t i_offset;
+        size_t i_length;
+        uint32_t i_generation;
+    } staging;
 
     struct {
         uint64_t i_read;    /* Number of bytes read */
@@ -638,6 +654,8 @@ AudioTrack_Reset( JNIEnv *env, audio_output_t *p_aout )
     AudioTrack_ResetPositions( env, p_aout );
     AudioTrack_ResetPlaybackHeadPosition( env, p_aout );
     p_sys->i_samples_written = 0;
+    p_sys->i_samples_inflight = 0;
+    p_sys->i_write_generation++;
     p_sys->i_resume_notify = VLC_TICK_INVALID;
 }
 
@@ -755,6 +773,7 @@ TimeGet( audio_output_t *p_aout, vlc_tick_t *restrict p_delay )
 {
     aout_sys_t *p_sys = p_aout->sys;
     vlc_tick_t i_audiotrack_us;
+    uint64_t i_samples_sent;
     JNIEnv *env;
 
     if( p_sys->b_passthrough )
@@ -762,7 +781,8 @@ TimeGet( audio_output_t *p_aout, vlc_tick_t *restrict p_delay )
 
     vlc_mutex_lock( &p_sys->lock );
 
-    if( p_sys->b_error || !p_sys->i_samples_written || !( env = GET_ENV() ) )
+    i_samples_sent = p_sys->i_samples_written + p_sys->i_samples_inflight;
+    if( p_sys->b_error || !i_samples_sent || !( env = GET_ENV() ) )
         goto bailout;
 
     i_audiotrack_us = AudioTrack_GetTimestampPositionUs( env, p_aout );
@@ -773,7 +793,7 @@ TimeGet( audio_output_t *p_aout, vlc_tick_t *restrict p_delay )
 /* Debug log for both delays */
 #if 0
 {
-    vlc_tick_t i_written_us = FRAMES_TO_US( p_sys->i_samples_written );
+    vlc_tick_t i_written_us = FRAMES_TO_US( i_samples_sent );
     vlc_tick_t i_ts_us = AudioTrack_GetTimestampPositionUs( env, p_aout );
     vlc_tick_t i_smooth_us = 0;
 
@@ -793,7 +813,7 @@ TimeGet( audio_output_t *p_aout, vlc_tick_t *restrict p_delay )
     if( i_audiotrack_us > 0 )
     {
         /* AudioTrack delay */
-        vlc_tick_t i_delay = FRAMES_TO_US( p_sys->i_samples_written )
+        vlc_tick_t i_delay = FRAMES_TO_US( i_samples_sent )
                         - i_audiotrack_us;
         if( i_delay >= 0 )
         {
@@ -1366,6 +1386,24 @@ Start( audio_output_t *p_aout, audio_sample_format_t *restrict p_fmt )
                 msg_Err(p_aout, "byte array allocation failed");
                 goto error;
             }
+
+            if( p_sys->i_write_type == WRITE_BYTEARRAYV23 )
+            {
+                p_sys->staging.i_size = p_sys->circular.i_size;
+                p_sys->staging.p_data = malloc( p_sys->staging.i_size );
+                p_bytearray = (*env)->NewByteArray( env, p_sys->staging.i_size );
+                if( p_bytearray )
+                {
+                    p_sys->staging.p_bytearray =
+                        (*env)->NewGlobalRef( env, p_bytearray );
+                    (*env)->DeleteLocalRef( env, p_bytearray );
+                }
+                if( !p_sys->staging.p_data || !p_sys->staging.p_bytearray )
+                {
+                    msg_Err( p_aout, "write staging allocation failed" );
+                    goto error;
+                }
+            }
             break;
         }
         case WRITE_SHORTARRAYV23:
@@ -1501,6 +1539,13 @@ Stop( audio_output_t *p_aout )
             (*env)->DeleteGlobalRef( env, p_sys->circular.u.p_bytearray );
             p_sys->circular.u.p_bytearray = NULL;
         }
+        if( p_sys->staging.p_bytearray )
+        {
+            (*env)->DeleteGlobalRef( env, p_sys->staging.p_bytearray );
+            p_sys->staging.p_bytearray = NULL;
+        }
+        free( p_sys->staging.p_data );
+        p_sys->staging.p_data = NULL;
         break;
     case WRITE_SHORTARRAYV23:
         if( p_sys->circular.u.p_shortarray )
@@ -1615,6 +1660,32 @@ AudioTrack_PlayByteArrayV23( JNIEnv *env, audio_output_t *p_aout,
     return i_ret;
 }
 
+/* Write a chunk that was copied out of the circular array while p_sys->lock
+ * was held. The vendor write may still block, but p_sys->lock is now free so
+ * Play() can continue enqueueing decoded audio and the input clock can run. */
+static int
+AudioTrack_PlayStagedByteArrayV23( JNIEnv *env, audio_output_t *p_aout,
+                                   size_t i_data_size )
+{
+    aout_sys_t *p_sys = p_aout->sys;
+
+    (*env)->SetByteArrayRegion( env, p_sys->staging.p_bytearray, 0,
+                                i_data_size, (jbyte *)p_sys->staging.p_data );
+    if( CHECK_AT_EXCEPTION( "SetByteArrayRegion" ) )
+        return -1;
+
+    const vlc_tick_t begin = mdate();
+    const int i_ret = JNI_AT_CALL_INT( writeV23,
+                                       p_sys->staging.p_bytearray, 0,
+                                       i_data_size,
+                                       jfields.AudioTrack.WRITE_NON_BLOCKING );
+    const vlc_tick_t elapsed = mdate() - begin;
+    if( elapsed > CLOCK_FREQ / 20 )
+        msg_Warn( p_aout, "[pause-fix] staged_write blocked_us=%"PRId64
+                  " size=%zu", elapsed, i_data_size );
+    return i_ret;
+}
+
 /**
  * Non blocking play function for Lollipop and after, run from
  * AudioTrack_Thread. It calls a new write method with WRITE_NON_BLOCKING
@@ -1695,6 +1766,40 @@ AudioTrack_PlayFloatArray( JNIEnv *env, audio_output_t *p_aout,
 }
 
 static int
+AudioTrack_HandleWriteResult( JNIEnv *env, audio_output_t *p_aout, int i_ret )
+{
+    aout_sys_t *p_sys = p_aout->sys;
+
+    if( i_ret < 0 ) {
+        if( jfields.AudioManager.has_ERROR_DEAD_OBJECT
+            && i_ret == jfields.AudioManager.ERROR_DEAD_OBJECT )
+        {
+            msg_Warn( p_aout, "ERROR_DEAD_OBJECT: "
+                              "try recreating AudioTrack" );
+            if( ( i_ret = AudioTrack_Recreate( env, p_aout ) ) == 0 )
+            {
+                AudioTrack_Reset( env, p_aout );
+                JNI_AT_CALL_VOID( play );
+                CHECK_AT_EXCEPTION( "play" );
+            }
+        } else
+        {
+            const char *str;
+            if( i_ret == jfields.AudioTrack.ERROR_INVALID_OPERATION )
+                str = "ERROR_INVALID_OPERATION";
+            else if( i_ret == jfields.AudioTrack.ERROR_BAD_VALUE )
+                str = "ERROR_BAD_VALUE";
+            else
+                str = "ERROR";
+            msg_Err( p_aout, "Write failed: %s", str );
+            p_sys->b_error = true;
+        }
+    } else
+        p_sys->i_samples_written += BYTES_TO_FRAMES( i_ret );
+    return i_ret;
+}
+
+static int
 AudioTrack_Play( JNIEnv *env, audio_output_t *p_aout, size_t i_data_size,
                  size_t i_data_offset, bool b_force )
 {
@@ -1727,33 +1832,7 @@ AudioTrack_Play( JNIEnv *env, audio_output_t *p_aout, size_t i_data_size,
         vlc_assert_unreachable();
     }
 
-    if( i_ret < 0 ) {
-        if( jfields.AudioManager.has_ERROR_DEAD_OBJECT
-            && i_ret == jfields.AudioManager.ERROR_DEAD_OBJECT )
-        {
-            msg_Warn( p_aout, "ERROR_DEAD_OBJECT: "
-                              "try recreating AudioTrack" );
-            if( ( i_ret = AudioTrack_Recreate( env, p_aout ) ) == 0 )
-            {
-                AudioTrack_Reset( env, p_aout );
-                JNI_AT_CALL_VOID( play );
-                CHECK_AT_EXCEPTION( "play" );
-            }
-        } else
-        {
-            const char *str;
-            if( i_ret == jfields.AudioTrack.ERROR_INVALID_OPERATION )
-                str = "ERROR_INVALID_OPERATION";
-            else if( i_ret == jfields.AudioTrack.ERROR_BAD_VALUE )
-                str = "ERROR_BAD_VALUE";
-            else
-                str = "ERROR";
-            msg_Err( p_aout, "Write failed: %s", str );
-            p_sys->b_error = true;
-        }
-    } else
-        p_sys->i_samples_written += BYTES_TO_FRAMES( i_ret );
-    return i_ret;
+    return AudioTrack_HandleWriteResult( env, p_aout, i_ret );
 }
 
 /**
@@ -1767,12 +1846,209 @@ AudioTrack_Thread( void *p_data )
     JNIEnv *env = GET_ENV();
     vlc_tick_t i_play_deadline = 0;
     vlc_tick_t i_last_time_blocked = 0;
+    const bool b_staged_writes = p_sys->i_write_type == WRITE_BYTEARRAYV23;
 
     if( !env )
         return NULL;
 
     for( ;; )
     {
+        if( b_staged_writes )
+        {
+            int i_ret = 0;
+            size_t i_data_size = 0;
+
+            vlc_mutex_lock( &p_sys->lock );
+
+            if( p_sys->staging.i_length != 0
+             && p_sys->staging.i_generation != p_sys->i_write_generation )
+            {
+                p_sys->staging.i_length = 0;
+                p_sys->i_samples_inflight = 0;
+            }
+
+            if( i_play_deadline != 0 && mdate() < i_play_deadline )
+            {
+                /* Don't wake up the thread when there is new data since we are
+                 * waiting for more space in AudioTrack's internal buffer. */
+                p_sys->b_thread_waiting = true;
+                while( p_sys->b_thread_running && i_ret != ETIMEDOUT )
+                    i_ret = vlc_cond_timedwait( &p_sys->thread_cond,
+                                               &p_sys->lock,
+                                               i_play_deadline );
+                i_play_deadline = 0;
+                p_sys->b_thread_waiting = false;
+            }
+
+            if( p_sys->staging.i_length == 0 )
+            {
+                while( p_sys->b_thread_running
+                    && ( p_sys->b_thread_paused || p_sys->b_backend_paused
+                      || p_sys->b_flushing ) )
+                    vlc_cond_wait( &p_sys->thread_cond, &p_sys->lock );
+
+                while( p_sys->b_thread_running
+                    && p_sys->circular.i_read >= p_sys->circular.i_write )
+                    vlc_cond_wait( &p_sys->thread_cond, &p_sys->lock );
+
+                if( !p_sys->b_thread_running || p_sys->b_error )
+                {
+                    vlc_mutex_unlock( &p_sys->lock );
+                    break;
+                }
+
+                const uint64_t i_audiotrack_pos =
+                    AudioTrack_getPlaybackHeadPosition( env, p_aout );
+                if( i_audiotrack_pos > p_sys->i_samples_written )
+                {
+                    msg_Warn( p_aout, "audiotrack position is ahead after resume: resync" );
+                    p_sys->i_samples_written = i_audiotrack_pos;
+                }
+                const uint64_t i_samples_pending =
+                    p_sys->i_samples_written - i_audiotrack_pos;
+                uint64_t i_capacity = 0;
+                if( i_samples_pending < p_sys->i_max_audiotrack_samples )
+                    i_capacity = FRAMES_TO_BYTES(
+                        p_sys->i_max_audiotrack_samples - i_samples_pending );
+                if( i_capacity == 0 )
+                {
+                    i_play_deadline = mdate() + __MAX( 10000, FRAMES_TO_US(
+                                      p_sys->i_max_audiotrack_samples / 5 ) );
+                    vlc_mutex_unlock( &p_sys->lock );
+                    continue;
+                }
+
+                const size_t i_data_offset =
+                    p_sys->circular.i_read % p_sys->circular.i_size;
+                i_data_size = __MIN( p_sys->circular.i_size - i_data_offset,
+                                     p_sys->circular.i_write - p_sys->circular.i_read );
+                i_data_size = __MIN( i_data_size, (size_t)i_capacity );
+                i_data_size -= i_data_size % p_sys->fmt.i_bytes_per_frame;
+                if( i_data_size == 0 )
+                {
+                    vlc_mutex_unlock( &p_sys->lock );
+                    continue;
+                }
+
+                (*env)->GetByteArrayRegion( env,
+                                            p_sys->circular.u.p_bytearray,
+                                            i_data_offset, i_data_size,
+                                            (jbyte *)p_sys->staging.p_data );
+                if( CHECK_AT_EXCEPTION( "GetByteArrayRegion" ) )
+                {
+                    vlc_mutex_unlock( &p_sys->lock );
+                    break;
+                }
+
+                p_sys->staging.i_offset = 0;
+                p_sys->staging.i_length = i_data_size;
+                p_sys->staging.i_generation = p_sys->i_write_generation;
+                p_sys->i_samples_inflight += BYTES_TO_FRAMES( i_data_size );
+                p_sys->circular.i_read += i_data_size;
+                vlc_cond_signal( &p_sys->aout_cond );
+            }
+
+            if( p_sys->i_resume_notify != VLC_TICK_INVALID )
+            {
+                const vlc_tick_t now = mdate();
+                msg_Info( p_aout, "[pause-fix] writer_resumed now_us=%"PRId64
+                          " wake_delay_us=%"PRId64" queued_us=%"PRId64,
+                          now, now - p_sys->i_resume_notify,
+                          BYTES_TO_US( p_sys->circular.i_write
+                                     - p_sys->circular.i_read ) );
+                p_sys->i_resume_notify = VLC_TICK_INVALID;
+            }
+            vlc_mutex_unlock( &p_sys->lock );
+
+            vlc_mutex_lock( &p_sys->write_lock );
+            vlc_mutex_lock( &p_sys->lock );
+            if( !p_sys->b_thread_running || p_sys->b_error
+             || p_sys->b_thread_paused || p_sys->b_backend_paused
+             || p_sys->b_flushing
+             || p_sys->staging.i_generation != p_sys->i_write_generation )
+            {
+                if( p_sys->staging.i_generation != p_sys->i_write_generation )
+                {
+                    p_sys->staging.i_length = 0;
+                    p_sys->i_samples_inflight = 0;
+                }
+                vlc_mutex_unlock( &p_sys->lock );
+                vlc_mutex_unlock( &p_sys->write_lock );
+                continue;
+            }
+
+            const uint64_t i_audiotrack_pos =
+                AudioTrack_getPlaybackHeadPosition( env, p_aout );
+            if( i_audiotrack_pos > p_sys->i_samples_written )
+            {
+                msg_Warn( p_aout, "audiotrack position is ahead after resume: resync" );
+                p_sys->i_samples_written = i_audiotrack_pos;
+            }
+            const uint64_t i_samples_pending =
+                p_sys->i_samples_written - i_audiotrack_pos;
+            uint64_t i_capacity = 0;
+            if( i_samples_pending < p_sys->i_max_audiotrack_samples )
+                i_capacity = FRAMES_TO_BYTES(
+                    p_sys->i_max_audiotrack_samples - i_samples_pending );
+            i_data_size = __MIN( p_sys->staging.i_length, (size_t)i_capacity );
+            i_data_size -= i_data_size % p_sys->fmt.i_bytes_per_frame;
+            vlc_mutex_unlock( &p_sys->lock );
+
+            if( i_data_size == 0 )
+            {
+                vlc_mutex_unlock( &p_sys->write_lock );
+                i_play_deadline = mdate() + __MAX( 10000, FRAMES_TO_US(
+                                  p_sys->i_max_audiotrack_samples / 5 ) );
+                continue;
+            }
+
+            i_ret = AudioTrack_PlayStagedByteArrayV23( env, p_aout,
+                                                       i_data_size );
+
+            vlc_mutex_lock( &p_sys->lock );
+            const uint32_t i_generation = p_sys->i_write_generation;
+            if( p_sys->staging.i_generation == i_generation )
+            {
+                i_ret = AudioTrack_HandleWriteResult( env, p_aout, i_ret );
+                if( i_ret > 0 )
+                {
+                    const size_t i_written = __MIN( (size_t)i_ret,
+                                                    p_sys->staging.i_length );
+                    p_sys->staging.i_length -= i_written;
+                    p_sys->i_samples_inflight -=
+                        __MIN( p_sys->i_samples_inflight, BYTES_TO_FRAMES( i_written ) );
+                    if( p_sys->staging.i_length != 0 )
+                        memmove( p_sys->staging.p_data,
+                                 p_sys->staging.p_data + i_written,
+                                 p_sys->staging.i_length );
+                    i_last_time_blocked = 0;
+                }
+                else if( i_ret == 0 )
+                    i_play_deadline = mdate() + __MAX( 10000, FRAMES_TO_US(
+                                      p_sys->i_max_audiotrack_samples / 5 ) );
+                else
+                {
+                    p_sys->staging.i_length = 0;
+                    p_sys->i_samples_inflight = 0;
+                }
+
+                if( p_sys->staging.i_generation != p_sys->i_write_generation )
+                {
+                    p_sys->staging.i_length = 0;
+                    p_sys->i_samples_inflight = 0;
+                }
+            }
+            else
+            {
+                p_sys->staging.i_length = 0;
+                p_sys->i_samples_inflight = 0;
+            }
+            vlc_cond_signal( &p_sys->aout_cond );
+            vlc_mutex_unlock( &p_sys->lock );
+            vlc_mutex_unlock( &p_sys->write_lock );
+            continue;
+        }
+
         int i_ret = 0;
         bool b_forced;
         size_t i_data_offset;
@@ -1795,7 +2071,9 @@ AudioTrack_Thread( void *p_data )
         }
 
         /* Wait for not paused state */
-        while( p_sys->b_thread_running && p_sys->b_thread_paused )
+        while( p_sys->b_thread_running
+            && ( p_sys->b_thread_paused || p_sys->b_backend_paused
+              || p_sys->b_flushing ) )
         {
             i_last_time_blocked = 0;
             vlc_cond_wait( &p_sys->thread_cond, &p_sys->lock );
@@ -2009,28 +2287,53 @@ static void
 Pause( audio_output_t *p_aout, bool b_pause, vlc_tick_t i_date )
 {
     aout_sys_t *p_sys = p_aout->sys;
-    JNIEnv *env;
+    JNIEnv *env = GET_ENV();
     VLC_UNUSED( i_date );
 
-    vlc_mutex_lock( &p_sys->lock );
+    if( !env )
+        return;
 
-    if( p_sys->b_error || !( env = GET_ENV() ) )
-        goto bailout;
+    vlc_mutex_lock( &p_sys->lock );
+    if( p_sys->b_error )
+    {
+        vlc_mutex_unlock( &p_sys->lock );
+        return;
+    }
 
     if( b_pause )
     {
         p_sys->b_thread_paused = true;
+        p_sys->b_backend_paused = true;
+    } else
+    {
+        p_sys->b_thread_paused = false;
+        /* Keep the writer out until AudioTrack.play() completed. */
+        p_sys->b_backend_paused = true;
+    }
+    vlc_cond_signal( &p_sys->thread_cond );
+    vlc_mutex_unlock( &p_sys->lock );
+
+    /* A vendor write can block for hundreds of milliseconds. Serialize the
+     * Java playback state change with it, but never wait while holding the
+     * producer lock. */
+    vlc_mutex_lock( &p_sys->write_lock );
+    if( b_pause )
+    {
         JNI_AT_CALL_VOID( pause );
         CHECK_AT_EXCEPTION( "pause" );
     } else
     {
-        p_sys->b_thread_paused = false;
+        vlc_mutex_lock( &p_sys->lock );
         AudioTrack_ResetPositions( env, p_aout );
+        vlc_mutex_unlock( &p_sys->lock );
         JNI_AT_CALL_VOID( play );
         CHECK_AT_EXCEPTION( "play" );
+
+        vlc_mutex_lock( &p_sys->lock );
         /* The writer may be sleeping on b_thread_paused with audio already in
          * the circular buffer. Changing the predicate alone leaves it asleep
          * until a new decoded block happens to signal it. */
+        p_sys->b_backend_paused = false;
         p_sys->i_resume_notify = mdate();
         vlc_cond_signal( &p_sys->thread_cond );
         msg_Info( p_aout, "[pause-fix] resume_notify now_us=%"PRId64
@@ -2038,22 +2341,51 @@ Pause( audio_output_t *p_aout, bool b_pause, vlc_tick_t i_date )
                   p_sys->i_resume_notify,
                   BYTES_TO_US( p_sys->circular.i_write - p_sys->circular.i_read ),
                   p_sys->b_error );
+        vlc_mutex_unlock( &p_sys->lock );
     }
-
-bailout:
-    vlc_mutex_unlock( &p_sys->lock );
+    vlc_mutex_unlock( &p_sys->write_lock );
 }
 
 static void
 Flush( audio_output_t *p_aout, bool b_wait )
 {
     aout_sys_t *p_sys = p_aout->sys;
-    JNIEnv *env;
+    JNIEnv *env = GET_ENV();
+
+    if( !env )
+        return;
 
     vlc_mutex_lock( &p_sys->lock );
 
-    if( p_sys->b_error || !( env = GET_ENV() ) )
-        goto bailout;
+    if( p_sys->b_error )
+    {
+        vlc_mutex_unlock( &p_sys->lock );
+        return;
+    }
+
+    /* Stop staging new writes and invalidate a chunk that may already have
+     * been copied out by the writer. */
+    p_sys->b_flushing = true;
+    p_sys->i_write_generation++;
+    vlc_cond_signal( &p_sys->thread_cond );
+
+    if( b_wait )
+    {
+        while( !p_sys->b_error
+            && ( p_sys->circular.i_read != p_sys->circular.i_write
+              || p_sys->i_samples_inflight != 0 ) )
+            vlc_cond_wait( &p_sys->aout_cond, &p_sys->lock );
+        if( p_sys->b_error )
+        {
+            p_sys->b_flushing = false;
+            vlc_mutex_unlock( &p_sys->lock );
+            return;
+        }
+    }
+    vlc_mutex_unlock( &p_sys->lock );
+
+    vlc_mutex_lock( &p_sys->write_lock );
+    vlc_mutex_lock( &p_sys->lock );
 
     /* Android doc:
      * stop(): Stops playing the audio data. When used on an instance created
@@ -2068,13 +2400,6 @@ Flush( audio_output_t *p_aout, bool b_wait )
      */
     if( b_wait )
     {
-        /* Wait for the thread to process the circular buffer */
-        while( !p_sys->b_error
-            && p_sys->circular.i_read != p_sys->circular.i_write )
-            vlc_cond_wait( &p_sys->aout_cond, &p_sys->lock );
-        if( p_sys->b_error )
-            goto bailout;
-
         JNI_AT_CALL_VOID( stop );
         if( CHECK_AT_EXCEPTION( "stop" ) )
             goto bailout;
@@ -2086,6 +2411,7 @@ Flush( audio_output_t *p_aout, bool b_wait )
         JNI_AT_CALL_VOID( flush );
     }
     p_sys->circular.i_read = p_sys->circular.i_write = 0;
+    p_sys->i_samples_inflight = 0;
 
     /* HACK: Before Android 4.4, the head position is not reset to zero and is
      * still moving after a flush or a stop. This prevents to get a precise
@@ -2104,9 +2430,19 @@ Flush( audio_output_t *p_aout, bool b_wait )
     AudioTrack_Reset( env, p_aout );
     JNI_AT_CALL_VOID( play );
     CHECK_AT_EXCEPTION( "play" );
+    p_sys->b_flushing = false;
+    vlc_cond_signal( &p_sys->thread_cond );
+    vlc_mutex_unlock( &p_sys->lock );
+    vlc_mutex_unlock( &p_sys->write_lock );
+    return;
 
 bailout:
+    p_sys->staging.i_length = 0;
+    p_sys->i_samples_inflight = 0;
+    p_sys->b_flushing = false;
+    vlc_cond_signal( &p_sys->thread_cond );
     vlc_mutex_unlock( &p_sys->lock );
+    vlc_mutex_unlock( &p_sys->write_lock );
 }
 
 static void
@@ -2256,6 +2592,7 @@ Open( vlc_object_t *obj )
 
     p_sys->at_dev = AT_DEV_DEFAULT;
     vlc_mutex_init(&p_sys->lock);
+    vlc_mutex_init(&p_sys->write_lock);
     vlc_cond_init(&p_sys->aout_cond);
     vlc_cond_init(&p_sys->thread_cond);
 
@@ -2286,6 +2623,7 @@ Close( vlc_object_t *obj )
     aout_sys_t *p_sys = p_aout->sys;
 
     vlc_mutex_destroy(&p_sys->lock);
+    vlc_mutex_destroy(&p_sys->write_lock);
     vlc_cond_destroy(&p_sys->aout_cond);
     vlc_cond_destroy(&p_sys->thread_cond);
     free( p_sys );
