@@ -42,5 +42,25 @@
     "packaged logger service declares dataSync and specialUse",
     "logger repair code in DEX"
   ],
-  "device_tested": false
+  "device_result": {
+    "date": "2026-11-04",
+    "audible_gap_observed": false,
+    "pause_resume_cycles": 4,
+    "destructive_flush_events": 0,
+    "insert_silence_events": 0,
+    "writer_wake_delay_us": [164, 620],
+    "backend_resume_call_us": [48644, 196310],
+    "recovery_end": {
+      "cycle": 1,
+      "elapsed_us": 2076131,
+      "drift_us": 20392
+    },
+    "last_drift_us": {
+      "cycle_2": 561363,
+      "cycle_3": 573239,
+      "cycle_4": 434412
+    },
+    "av_sync_subjectively_verified": false
+  },
+  "device_tested": true
 }

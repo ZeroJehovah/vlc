@@ -109,7 +109,16 @@ info = {
                'resume recovery defers late flush and early silence in the real aout decision path',
                'normal destructive correction remains active outside resume recovery',
                'packaged logger service declares dataSync and specialUse', 'logger repair code in DEX'],
-    'device_tested': False,
+    'device_result': {
+        'date': '2026-11-04', 'audible_gap_observed': False,
+        'pause_resume_cycles': 4, 'destructive_flush_events': 0,
+        'insert_silence_events': 0, 'writer_wake_delay_us': [164, 620],
+        'backend_resume_call_us': [48644, 196310],
+        'recovery_end': {'cycle': 1, 'elapsed_us': 2076131, 'drift_us': 20392},
+        'last_drift_us': {'cycle_2': 561363, 'cycle_3': 573239, 'cycle_4': 434412},
+        'av_sync_subjectively_verified': False,
+    },
+    'device_tested': True,
 }
 (artifacts / 'build-info.json').write_text(json.dumps(info, ensure_ascii=False, indent=2) + '\n')
 print(json.dumps(info, ensure_ascii=False, indent=2))
