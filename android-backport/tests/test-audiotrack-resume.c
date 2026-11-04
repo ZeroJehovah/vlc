@@ -10,6 +10,7 @@ static pthread_mutex_t test_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t test_cond = PTHREAD_COND_INITIALIZER;
 static bool waiting, wrote;
 static size_t bytes_written;
+static unsigned write_calls, head_position;
 static aout_sys_t *active;
 static int play_method, pause_method, write_method, head_method;
 
@@ -57,7 +58,7 @@ static jint MockCallInt(JNIEnv *env, jobject obj, jmethodID method, ...)
 {
     (void)env; (void)obj;
     if (method == (jmethodID)&head_method)
-        return 0; /* Fake sink starts at playback position zero. */
+        return head_position;
     assert(method == (jmethodID)&write_method);
     va_list ap;
     va_start(ap, method);
@@ -67,6 +68,7 @@ static jint MockCallInt(JNIEnv *env, jobject obj, jmethodID method, ...)
     va_end(ap);
     pthread_mutex_lock(&test_lock);
     bytes_written += size;
+    write_calls++;
     wrote = true;
     pthread_cond_signal(&test_cond);
     pthread_mutex_unlock(&test_lock);
@@ -105,12 +107,30 @@ int main(int argc, char **argv)
     jfields.AudioTrack.pause = (jmethodID)&pause_method;
     jfields.AudioTrack.writeV23 = (jmethodID)&write_method;
     jfields.AudioTrack.getPlaybackHeadPosition = (jmethodID)&head_method;
+
+#ifdef EXPECT_V23_BUFFER_GUARD
+    /* A full vendor buffer must not be passed to the "non-blocking" Java
+     * write, which can block during Bluetooth route restoration. */
+    aout_sys_t full = {0};
+    audio_output_t full_aout = {.sys = &full};
+    full.fmt.i_rate = 48000;
+    full.fmt.i_bytes_per_frame = 4;
+    full.fmt.i_frame_length = 1;
+    full.i_samples_written = 38400;
+    full.i_max_audiotrack_samples = 38400;
+    head_position = write_calls = 0;
+    assert(AudioTrack_PlayByteArrayV23(&env, &full_aout, 4096, 0) == 0);
+    assert(write_calls == 0);
+#endif
+
     for (unsigned round = 0; round < (old ? 1u : 20u); round++) {
         aout_sys_t sys = {0};
         audio_output_t aout = {.sys = &sys};
         active = &sys;
         waiting = wrote = false;
         bytes_written = 0;
+        write_calls = 0;
+        head_position = 0;
         sys.fmt.i_rate = 48000;
         sys.fmt.i_bytes_per_frame = 4;
         sys.fmt.i_frame_length = 1;

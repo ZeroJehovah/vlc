@@ -1590,8 +1590,8 @@ AudioTrack_PlayByteArrayV23( JNIEnv *env, audio_output_t *p_aout,
         AudioTrack_getPlaybackHeadPosition( env, p_aout );
     if( i_audiotrack_pos > p_sys->i_samples_written )
     {
-        msg_Warn( p_aout, "audiotrack position is ahead after resume" );
-        return 0;
+        msg_Warn( p_aout, "audiotrack position is ahead after resume: resync" );
+        p_sys->i_samples_written = i_audiotrack_pos;
     }
     const uint64_t i_samples_pending =
         p_sys->i_samples_written - i_audiotrack_pos;

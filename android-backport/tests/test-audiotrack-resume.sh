@@ -19,12 +19,15 @@ PY
 for variant in before after; do
     if [ "$variant" = before ]; then
         source_file="$test_output/audiotrack-before.c"
+        guard_flag=
     else
         source_file="$task_core/modules/audio_output/audiotrack.c"
+        guard_flag=-DEXPECT_V23_BUFFER_GUARD
     fi
     "${CC:-clang-18}" -g -O1 -D_GNU_SOURCE '-DMODULE_STRING="android_audiotrack"' -DMODULE_NAME=android_audiotrack \
         '-D__INTRODUCED_IN(x)=' '-D__INTRODUCED_IN_64(x)=' '-D__DEPRECATED_IN(...)=' '-D__REMOVED_IN(...)=' \
         -D_Nullable= -D_Nonnull= -D__ANDROID_API__=35 \
+        $guard_flag \
         -DAUDIOTRACK_SOURCE="\"$source_file\"" \
         -I"$task_core/include" -I"$test_output/include" \
         -I"$jdk/include" -I"$jdk/include/linux" \

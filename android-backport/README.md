@@ -73,10 +73,10 @@ cd /home/ubuntu/vlc-aaudio/libvlcjni/vlc/build-android-aarch64-linux-android/mod
 make -j4 libandroid_audiotrack_plugin.la
 install -m 644 .libs/libandroid_audiotrack_plugin.a ../install/lib/vlc/plugins/libandroid_audiotrack_plugin.a
 cd /home/ubuntu/vlc-aaudio
-sh link-native.sh
+sh link-native.sh -B
 ```
 
-JNI 补丁中的 `LOCAL_ADDITIONAL_DEPENDENCIES` 很关键：插件归档原先只列在链接参数中，make 不会因其变化自动重链接，可能将旧 `libvlc.so` 打入新 APK。打包脚本同时检查新库的诊断字符串与哈希。
+`-B` 强制完成 JNI 重链接。JNI 补丁中的 `LOCAL_ADDITIONAL_DEPENDENCIES` 仍记录插件归档依赖，但当前 NDK make 对这条规则没有稳定触发所有增量重链接场景。插件归档原先只列在链接参数中，make 可能将旧 `libvlc.so` 打入新 APK。打包脚本同时检查新库的诊断字符串与哈希。
 
 应用编译与签名：
 
