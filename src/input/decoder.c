@@ -117,6 +117,9 @@ struct decoder_owner_sys_t
     unsigned frames_countdown;
     bool paused;
 
+    /* Protected by lock; only controls diagnostic sampling. */
+    vlc_pause_diag_t pause_diag;
+
     bool error;
 
     /* Waiting */
@@ -1180,17 +1183,40 @@ static int DecoderPlayAudio( decoder_t *p_dec, block_t *p_audio,
     /* */
     int i_rate = INPUT_RATE_DEFAULT;
 
+    const vlc_tick_t media_pts = p_audio->i_pts, convert_begin = mdate ();
     DecoderWaitUnblock( p_dec );
     DecoderFixTs( p_dec, &p_audio->i_pts, NULL, &p_audio->i_length,
                   &i_rate, AOUT_MAX_ADVANCE_TIME );
+    const vlc_tick_t convert_end = mdate ();
+    const bool trace = vlc_pause_diag_Sample (&p_owner->pause_diag, convert_end);
+    const unsigned trace_cycle = p_owner->pause_diag.cycle;
+    if (trace)
+        msg_Info (p_dec, "[pause-diag] decoder_audio_convert cycle=%u sample=%u"
+                  " media_pts_us=%"PRId64" system_pts_us=%"PRId64
+                  " now_us=%"PRId64" convert_wait_us=%"PRId64
+                  " after_resume_us=%"PRId64" rate=%d ts_delay_us=%"PRId64,
+                  trace_cycle, p_owner->pause_diag.samples, media_pts,
+                  p_audio->i_pts, convert_end, convert_end - convert_begin,
+                  convert_end - p_owner->pause_diag.resume_date, i_rate,
+                  p_owner->i_ts_delay);
     vlc_mutex_unlock( &p_owner->lock );
 
     audio_output_t *p_aout = p_owner->p_aout;
 
-    if( p_aout != NULL && p_audio->i_pts > VLC_TICK_INVALID
+    const bool accepted = p_aout != NULL && p_audio->i_pts > VLC_TICK_INVALID
      && i_rate >= INPUT_RATE_DEFAULT/AOUT_MAX_INPUT_RATE
      && i_rate <= INPUT_RATE_DEFAULT*AOUT_MAX_INPUT_RATE
-     && !DecoderTimedWait( p_dec, p_audio->i_pts - AOUT_MAX_PREPARE_TIME ) )
+     && !DecoderTimedWait( p_dec, p_audio->i_pts - AOUT_MAX_PREPARE_TIME );
+    if (trace)
+    {
+        const vlc_tick_t now = mdate ();
+        msg_Info (p_dec, "[pause-diag] decoder_audio_handoff cycle=%u"
+                  " accepted=%d now_us=%"PRId64" prepare_wait_us=%"PRId64
+                  " system_pts_us=%"PRId64" aout=%p",
+                  trace_cycle, accepted, now, now - convert_end,
+                  p_audio->i_pts, (void *)p_aout);
+    }
+    if( accepted )
     {
         int status = aout_DecPlay( p_aout, p_audio, i_rate );
         if( status == AOUT_DEC_CHANGED )
@@ -1557,6 +1583,8 @@ static void *DecoderThread( void *p_data )
 
             vlc_fifo_Unlock( p_owner->p_fifo );
 
+            msg_Info (p_dec, "[pause-diag] decoder_flush type=%d now_us=%"PRId64,
+                      p_dec->fmt_in.i_cat, mdate ());
             /* Flush the decoder (and the output) */
             DecoderProcessFlush( p_dec );
 
@@ -1579,6 +1607,10 @@ static void *DecoderThread( void *p_data )
             paused = p_owner->paused;
             vlc_fifo_Unlock( p_owner->p_fifo );
 
+            const vlc_tick_t begin = mdate ();
+            msg_Info (p_dec, "[pause-diag] decoder_pause_apply type=%d paused=%d"
+                      " request_us=%"PRId64" now_us=%"PRId64" lag_us=%"PRId64,
+                      p_dec->fmt_in.i_cat, paused, date, begin, begin - date);
             /* NOTE: Only the audio and video outputs care about pause. */
             msg_Dbg( p_dec, "toggling %s", paused ? "resume" : "pause" );
             if( p_owner->p_vout != NULL )
@@ -1586,6 +1618,13 @@ static void *DecoderThread( void *p_data )
             if( p_owner->p_aout != NULL )
                 aout_DecChangePause( p_owner->p_aout, paused, date );
 
+            const vlc_tick_t end = mdate ();
+            vlc_mutex_lock (&p_owner->lock);
+            vlc_pause_diag_Change (&p_owner->pause_diag, paused, date, end);
+            vlc_mutex_unlock (&p_owner->lock);
+            msg_Info (p_dec, "[pause-diag] decoder_pause_done type=%d paused=%d"
+                      " request_us=%"PRId64" now_us=%"PRId64" call_us=%"PRId64,
+                      p_dec->fmt_in.i_cat, paused, date, end, end - begin);
             vlc_restorecancel( canc );
             vlc_fifo_Lock( p_owner->p_fifo );
             continue;
@@ -1692,6 +1731,7 @@ static decoder_t * CreateDecoder( vlc_object_t *p_parent,
 
     p_owner->paused = false;
     p_owner->pause_date = VLC_TICK_INVALID;
+    vlc_pause_diag_Init (&p_owner->pause_diag);
     p_owner->frames_countdown = 0;
 
     p_owner->b_waiting = false;
@@ -2255,6 +2295,9 @@ void input_DecoderChangePause( decoder_t *p_dec, bool b_paused, vlc_tick_t i_dat
      * while the input is paused (e.g. add sub file), then b_paused is
      * (incorrectly) false. FIXME: This is a bug in the decoder owner. */
     vlc_fifo_Lock( p_owner->p_fifo );
+    msg_Info (p_dec, "[pause-diag] decoder_pause_request type=%d paused=%d"
+              " previous=%d request_us=%"PRId64" now_us=%"PRId64,
+              p_dec->fmt_in.i_cat, b_paused, p_owner->paused, i_date, mdate ());
     p_owner->paused = b_paused;
     p_owner->pause_date = i_date;
     p_owner->frames_countdown = 0;

@@ -206,6 +206,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     aout_owner_t *owner = aout_owner (aout);
 
     vlc_mutex_init (&owner->lock);
+    vlc_pause_diag_Init (&owner->pause_diag);
     vlc_mutex_init (&owner->req.lock);
     vlc_mutex_init (&owner->dev.lock);
     vlc_mutex_init (&owner->vp.lock);
@@ -248,6 +249,9 @@ audio_output_t *aout_New (vlc_object_t *parent)
         vlc_object_release (aout);
         return NULL;
     }
+
+    msg_Info (aout, "[pause-diag] build=diag1 audio_module=%s",
+              module_get_object (owner->module));
 
     /*
      * Persistent audio output variables
@@ -609,6 +613,10 @@ int aout_OutputTimeGet (audio_output_t *aout, vlc_tick_t *delay)
 void aout_OutputPlay (audio_output_t *aout, block_t *block)
 {
     aout_OutputAssertLocked (aout);
+    aout_owner_t *diag_owner = aout_owner (aout);
+    const bool trace = diag_owner->pause_diag.log_buffer;
+    const vlc_tick_t pts = block->i_pts, length = block->i_length;
+    const vlc_tick_t begin = trace ? mdate () : VLC_TICK_INVALID;
 #ifndef NDEBUG
     aout_owner_t *owner = aout_owner (aout);
     assert (owner->mixer_format.i_frame_length > 0);
@@ -617,6 +625,15 @@ void aout_OutputPlay (audio_output_t *aout, block_t *block)
             owner->mixer_format.i_frame_length);
 #endif
     aout->play (aout, block);
+    if (trace)
+    {
+        const vlc_tick_t end = mdate ();
+        msg_Info (aout, "[pause-diag] backend_play cycle=%u pts_us=%"PRId64
+                  " length_us=%"PRId64" begin_us=%"PRId64
+                  " end_us=%"PRId64" call_us=%"PRId64,
+                  diag_owner->pause_diag.cycle, pts, length, begin, end,
+                  end - begin);
+    }
 }
 
 static void PauseDefault (audio_output_t *aout, bool pause, vlc_tick_t date)
@@ -650,7 +667,17 @@ void aout_OutputPause( audio_output_t *aout, bool pause, vlc_tick_t date )
 void aout_OutputFlush( audio_output_t *aout, bool wait )
 {
     aout_OutputAssertLocked( aout );
+    aout_owner_t *owner = aout_owner (aout);
+    const bool trace = vlc_pause_diag_Event (&owner->pause_diag);
+    const vlc_tick_t begin = trace ? mdate () : VLC_TICK_INVALID;
     aout->flush (aout, wait);
+    if (trace)
+    {
+        const vlc_tick_t end = mdate ();
+        msg_Info (aout, "[pause-diag] backend_flush cycle=%u wait=%d"
+                  " begin_us=%"PRId64" end_us=%"PRId64" call_us=%"PRId64,
+                  owner->pause_diag.cycle, wait, begin, end, end - begin);
+    }
 }
 
 static int aout_OutputVolumeSet (audio_output_t *aout, float vol)

@@ -46,6 +46,77 @@ struct aout_request_vout
 typedef struct aout_volume aout_volume_t;
 typedef struct aout_dev aout_dev_t;
 
+/* Diagnostic state only: never used to schedule or correct playback.
+ * The caller holds the audio output lock, or the decoder owner lock. */
+typedef struct
+{
+    unsigned cycle;
+    vlc_tick_t pause_date;
+    vlc_tick_t resume_date;
+    vlc_tick_t next_sample;
+    vlc_tick_t last_buffer_date;
+    unsigned samples;
+    unsigned events_left;
+    bool log_buffer;
+} vlc_pause_diag_t;
+
+static inline void vlc_pause_diag_Init(vlc_pause_diag_t *diag)
+{
+    *diag = (vlc_pause_diag_t) {
+        .pause_date = VLC_TICK_INVALID,
+        .resume_date = VLC_TICK_INVALID,
+        .last_buffer_date = VLC_TICK_INVALID,
+    };
+}
+
+static inline void vlc_pause_diag_Change(vlc_pause_diag_t *diag, bool paused,
+                                       vlc_tick_t date, vlc_tick_t now)
+{
+    diag->log_buffer = false;
+    if (paused)
+    {
+        diag->cycle++;
+        diag->pause_date = date;
+        diag->resume_date = VLC_TICK_INVALID;
+    }
+    else
+    {
+        diag->resume_date = now;
+        diag->next_sample = now;
+        diag->last_buffer_date = now;
+        diag->samples = 0;
+        diag->events_left = 48;
+    }
+}
+
+static inline bool vlc_pause_diag_Active(const vlc_pause_diag_t *diag,
+                                       vlc_tick_t now)
+{
+    return diag->resume_date != VLC_TICK_INVALID
+        && now >= diag->resume_date
+        && now - diag->resume_date <= 5 * CLOCK_FREQ;
+}
+
+static inline bool vlc_pause_diag_Sample(vlc_pause_diag_t *diag, vlc_tick_t now)
+{
+    diag->log_buffer = vlc_pause_diag_Active(diag, now) && diag->samples < 32
+                    && (diag->samples < 4 || now >= diag->next_sample);
+    if (diag->log_buffer)
+    {
+        diag->samples++;
+        diag->next_sample = now + CLOCK_FREQ / 5;
+    }
+    return diag->log_buffer;
+}
+
+static inline bool vlc_pause_diag_Event(vlc_pause_diag_t *diag)
+{
+    if (diag->events_left == 0 || !vlc_pause_diag_Active(diag, mdate()))
+        return false;
+    diag->events_left--;
+    return true;
+}
+
 typedef struct
 {
     vlc_mutex_t lock;
@@ -82,6 +153,8 @@ typedef struct
         int resamp_type; /**< Resampler mode (FIXME: redundant / resampling) */
         bool discontinuity;
     } sync;
+
+    vlc_pause_diag_t pause_diag;
 
     int initial_stereo_mode; /**< Initial stereo mode set by options */
 

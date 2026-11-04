@@ -1757,6 +1757,9 @@ static void ControlRelease( int i_type, vlc_value_t val )
 /* Pause input */
 static void ControlPause( input_thread_t *p_input, vlc_tick_t i_control_date )
 {
+    msg_Info (p_input, "[pause-diag] input_pause paused=1 request_us=%"PRId64
+              " now_us=%"PRId64" can_pause=%d", i_control_date, mdate (),
+              input_priv(p_input)->b_can_pause);
     int i_state = PAUSE_S;
 
     if( input_priv(p_input)->b_can_pause )
@@ -1784,6 +1787,9 @@ static void ControlPause( input_thread_t *p_input, vlc_tick_t i_control_date )
 
 static void ControlUnpause( input_thread_t *p_input, vlc_tick_t i_control_date )
 {
+    msg_Info (p_input, "[pause-diag] input_pause paused=0 request_us=%"PRId64
+              " now_us=%"PRId64" can_pause=%d", i_control_date, mdate (),
+              input_priv(p_input)->b_can_pause);
     if( input_priv(p_input)->b_can_pause )
     {
         demux_t *p_demux = input_priv(p_input)->master->p_demux;

@@ -570,6 +570,12 @@ static void EsOutChangePause( es_out_t *out, bool b_paused, vlc_tick_t i_date )
 {
     es_out_sys_t *p_sys = out->p_sys;
 
+    msg_Info (p_sys->p_input, "[pause-diag] es_pause_begin paused=%d"
+              " request_us=%"PRId64" previous_date_us=%"PRId64
+              " now_us=%"PRId64" buffering=%d extra_initial_us=%"PRId64,
+              b_paused, i_date, p_sys->i_pause_date, mdate (),
+              p_sys->b_buffering, p_sys->i_buffering_extra_initial);
+
     /* XXX the order is important */
     if( b_paused )
     {
@@ -608,6 +614,9 @@ static void EsOutChangePause( es_out_t *out, bool b_paused, vlc_tick_t i_date )
     }
     p_sys->b_paused = b_paused;
     p_sys->i_pause_date = i_date;
+    msg_Info (p_sys->p_input, "[pause-diag] es_pause_end paused=%d"
+              " effective_date_us=%"PRId64" now_us=%"PRId64,
+              b_paused, i_date, mdate ());
 }
 
 static void EsOutChangeRate( es_out_t *out, int i_rate )
@@ -641,6 +650,8 @@ static void EsOutChangePosition( es_out_t *out )
         p_es->i_pts_level = VLC_TICK_INVALID;
     }
 
+    msg_Info (p_sys->p_input, "[pause-diag] clock_reset reason=position_change"
+              " paused=%d now_us=%"PRId64, p_sys->b_paused, mdate ());
     for( int i = 0; i < p_sys->i_pgrm; i++ ) {
         input_clock_Reset( p_sys->pgrm[i]->p_clock );
         p_sys->pgrm[i]->i_last_pcr = VLC_TICK_INVALID;
@@ -794,7 +805,24 @@ static void EsOutProgramChangePause( es_out_t *out, bool b_paused, vlc_tick_t i_
     es_out_sys_t *p_sys = out->p_sys;
 
     for( int i = 0; i < p_sys->i_pgrm; i++ )
-        input_clock_ChangePause( p_sys->pgrm[i]->p_clock, b_paused, i_date );
+    {
+        input_clock_t *clock = p_sys->pgrm[i]->p_clock;
+        vlc_tick_t stream_before = VLC_TICK_INVALID, system_before = VLC_TICK_INVALID;
+        vlc_tick_t stream_after = VLC_TICK_INVALID, system_after = VLC_TICK_INVALID;
+        vlc_tick_t stream_duration, system_duration;
+        int before = input_clock_GetState (clock, &stream_before, &system_before,
+                                          &stream_duration, &system_duration);
+        input_clock_ChangePause( clock, b_paused, i_date );
+        int after = input_clock_GetState (clock, &stream_after, &system_after,
+                                         &stream_duration, &system_duration);
+        msg_Info (p_sys->p_input, "[pause-diag] input_clock_pause clock=%p"
+                  " paused=%d request_us=%"PRId64" now_us=%"PRId64
+                  " before_status=%d after_status=%d stream_before_us=%"PRId64
+                  " stream_after_us=%"PRId64" system_before_us=%"PRId64
+                  " system_after_us=%"PRId64,
+                  (void *)clock, b_paused, i_date, mdate (), before, after,
+                  stream_before, stream_after, system_before, system_after);
+    }
 }
 
 static void EsOutDecoderChangeDelay( es_out_t *out, es_out_id_t *p_es )
@@ -2549,6 +2577,9 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
                     i_pts_delay = p_sys->i_pts_delay;
 
                     /* reset clock */
+                    msg_Info (p_sys->p_input, "[pause-diag] clock_reset"
+                              " reason=pcr_jitter paused=%d now_us=%"PRId64,
+                              p_sys->b_paused, mdate ());
                     for( int i = 0; i < p_sys->i_pgrm; i++ )
                       input_clock_Reset( p_sys->pgrm[i]->p_clock );
                 }
