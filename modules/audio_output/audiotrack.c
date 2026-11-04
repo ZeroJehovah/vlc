@@ -150,6 +150,7 @@ struct aout_sys_t {
     bool b_backend_paused;  /* Playback is paused or pause/resume is in flight */
     bool b_flushing;        /* Flush invalidates a staged write */
     vlc_tick_t i_resume_notify; /* diagnostic: first writer activity on resume */
+    vlc_tick_t i_pause_date;    /* effective pause date used to repair timing */
 
     uint64_t i_samples_written; /* Number of samples written since last flush */
     uint64_t i_samples_inflight; /* Samples copied out but not yet written */
@@ -643,6 +644,30 @@ AudioTrack_ResetPositions( JNIEnv *env, audio_output_t *p_aout )
     p_sys->smoothpos.i_latency_us = 0;
 }
 
+/* AudioTrack's timestamp and smoothed-head samples are based on the system
+ * clock.  That clock keeps running while playback is paused, but the AudioTrack
+ * head does not.  Shift cached points by the pause duration at resume, as VLC 4
+ * does for its output timing, so the first timing query after resume does not
+ * extrapolate audio through the paused interval and trigger a bogus reset. */
+static void
+AudioTrack_ApplyPauseDelay( audio_output_t *p_aout, vlc_tick_t i_delay )
+{
+    aout_sys_t *p_sys = p_aout->sys;
+
+    if( i_delay <= 0 )
+        return;
+
+    if( p_sys->timestamp.i_frame_us != 0 )
+        p_sys->timestamp.i_frame_us += i_delay;
+    p_sys->timestamp.i_last_time = 0;
+
+    for( uint32_t i = 0; i < p_sys->smoothpos.i_count; ++i )
+        p_sys->smoothpos.p_us[i] -= i_delay;
+    if( p_sys->smoothpos.i_count != 0 )
+        p_sys->smoothpos.i_us -= i_delay;
+    p_sys->smoothpos.i_last_time = 0;
+}
+
 /**
  * Reset all AudioTrack positions and internal state
  */
@@ -657,6 +682,7 @@ AudioTrack_Reset( JNIEnv *env, audio_output_t *p_aout )
     p_sys->i_samples_inflight = 0;
     p_sys->i_write_generation++;
     p_sys->i_resume_notify = VLC_TICK_INVALID;
+    p_sys->i_pause_date = VLC_TICK_INVALID;
 }
 
 /**
@@ -826,7 +852,14 @@ TimeGet( audio_output_t *p_aout, vlc_tick_t *restrict p_delay )
         }
         else
         {
-            msg_Warn( p_aout, "timing screwed, reset positions" );
+            msg_Warn( p_aout, "timing screwed, reset positions"
+                      ": sent_us=%"PRId64" audiotrack_us=%"PRId64
+                      " queued_us=%"PRId64" written=%"PRIu64
+                      " inflight=%"PRIu64,
+                      FRAMES_TO_US( i_samples_sent ), i_audiotrack_us,
+                      BYTES_TO_US( p_sys->circular.i_write
+                                   - p_sys->circular.i_read ),
+                      p_sys->i_samples_written, p_sys->i_samples_inflight );
             AudioTrack_ResetPositions( env, p_aout );
         }
     }
@@ -2296,7 +2329,6 @@ Pause( audio_output_t *p_aout, bool b_pause, vlc_tick_t i_date )
 {
     aout_sys_t *p_sys = p_aout->sys;
     JNIEnv *env = GET_ENV();
-    VLC_UNUSED( i_date );
 
     if( !env )
         return;
@@ -2310,6 +2342,8 @@ Pause( audio_output_t *p_aout, bool b_pause, vlc_tick_t i_date )
 
     if( b_pause )
     {
+        if( p_sys->i_pause_date == VLC_TICK_INVALID )
+            p_sys->i_pause_date = i_date;
         p_sys->b_thread_paused = true;
         p_sys->b_backend_paused = true;
     } else
@@ -2332,7 +2366,20 @@ Pause( audio_output_t *p_aout, bool b_pause, vlc_tick_t i_date )
     } else
     {
         vlc_mutex_lock( &p_sys->lock );
-        AudioTrack_ResetPositions( env, p_aout );
+        const vlc_tick_t i_pause_duration =
+            p_sys->i_pause_date != VLC_TICK_INVALID && i_date > p_sys->i_pause_date
+          ? i_date - p_sys->i_pause_date : 0;
+        if( p_sys->i_pause_date != VLC_TICK_INVALID )
+        {
+            AudioTrack_ApplyPauseDelay( p_aout, i_pause_duration );
+            msg_Info( p_aout, "[pause-fix] timing_shift duration_us=%"PRId64
+                      " timestamp_us=%"PRId64" smooth_us=%"PRId64,
+                      i_pause_duration, p_sys->timestamp.i_frame_us,
+                      p_sys->smoothpos.i_us );
+            p_sys->i_pause_date = VLC_TICK_INVALID;
+        }
+        else
+            AudioTrack_ResetPositions( env, p_aout );
         vlc_mutex_unlock( &p_sys->lock );
         JNI_AT_CALL_VOID( play );
         CHECK_AT_EXCEPTION( "play" );

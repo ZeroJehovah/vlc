@@ -1218,15 +1218,7 @@ static int DecoderPlayAudio( decoder_t *p_dec, block_t *p_audio,
     }
     if( accepted )
     {
-        vlc_tick_t clock_delay = 0;
-        int status = aout_DecPlay( p_aout, p_audio, i_rate, &clock_delay );
-        if( clock_delay > 0 && p_owner->p_clock != NULL )
-        {
-            input_clock_AddSystemDelay( p_owner->p_clock, clock_delay );
-            msg_Warn( p_dec, "[pause-diag] action=input_clock_delay"
-                      " delay_us=%"PRId64" media_pts_us=%"PRId64,
-                      clock_delay, media_pts );
-        }
+        int status = aout_DecPlay( p_aout, p_audio, i_rate );
         if( status == AOUT_DEC_CHANGED )
         {
             /* Only reload the decoder */

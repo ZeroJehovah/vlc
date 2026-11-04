@@ -257,60 +257,8 @@ static void aout_DecSilence (audio_output_t *aout, vlc_tick_t length, vlc_tick_t
     aout_OutputPlay (aout, block);
 }
 
-/* A late Bluetooth AudioTrack wakeup can consume part of the resume window
- * without consuming the corresponding media time.  VLC 3 otherwise keeps
- * that offset until a seek resets the output.  Once a large positive drift is
- * stable, move the shared input->system mapping so future video waits for the
- * audio that has already been queued.  Corrections are deliberately bounded
- * and limited to the short resume-recovery window. */
-#define AOUT_RESUME_CLOCK_MIN_DELAY (3 * AOUT_MAX_PTS_DELAY)
-#define AOUT_RESUME_CLOCK_MAX_DELAY CLOCK_FREQ
-#define AOUT_RESUME_CLOCK_MIN_WINDOW VLC_TICK_FROM_MS(500)
-#define AOUT_RESUME_CLOCK_INTERVAL VLC_TICK_FROM_MS(500)
-#define AOUT_RESUME_CLOCK_MAX_CORRECTIONS 2
-
-static vlc_tick_t aout_GetResumeClockDelay (aout_owner_t *owner,
-                                            vlc_tick_t drift,
-                                            vlc_tick_t now)
-{
-    if (!owner->sync.resume_recovery
-     || owner->sync.resume_clock_corrections >= AOUT_RESUME_CLOCK_MAX_CORRECTIONS
-     || now - owner->sync.resume_date < AOUT_RESUME_CLOCK_MIN_WINDOW
-     || (owner->sync.resume_clock_date != VLC_TICK_INVALID
-      && now - owner->sync.resume_clock_date < AOUT_RESUME_CLOCK_INTERVAL)
-     || drift < AOUT_RESUME_CLOCK_MIN_DELAY)
-    {
-        owner->sync.resume_clock_candidate = VLC_TICK_INVALID;
-        owner->sync.resume_clock_samples = 0;
-        return 0;
-    }
-
-    if (owner->sync.resume_clock_samples == 0
-     || llabs(drift - owner->sync.resume_clock_candidate)
-        > AOUT_MAX_PTS_DELAY)
-    {
-        owner->sync.resume_clock_candidate = drift;
-        owner->sync.resume_clock_samples = 1;
-        return 0;
-    }
-
-    owner->sync.resume_clock_candidate = drift;
-    owner->sync.resume_clock_samples++;
-    if (owner->sync.resume_clock_samples < 2)
-        return 0;
-
-    const vlc_tick_t delay =
-        __MIN(drift, AOUT_RESUME_CLOCK_MAX_DELAY);
-    owner->sync.resume_clock_candidate = VLC_TICK_INVALID;
-    owner->sync.resume_clock_samples = 0;
-    owner->sync.resume_clock_corrections++;
-    owner->sync.resume_clock_date = now;
-    owner->sync.resume_stable_samples = 0;
-    return delay;
-}
-
 static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
-                                 int input_rate, vlc_tick_t *pi_clock_delay)
+                                 int input_rate)
 {
     aout_owner_t *owner = aout_owner (aout);
     vlc_tick_t drift;
@@ -347,8 +295,6 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     }
     const vlc_tick_t output_delay = drift, sync_now = mdate ();
     drift += sync_now - dec_pts;
-    const vlc_tick_t clock_delay =
-        aout_GetResumeClockDelay (owner, drift, sync_now);
     if (owner->pause_diag.log_buffer)
         msg_Info (aout, "[pause-diag] audio_timing cycle=%u status=ok"
                   " now_us=%"PRId64" pts_us=%"PRId64" delay_us=%"PRId64
@@ -358,17 +304,6 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                   drift, owner->sync.discontinuity, input_rate,
                   owner->sync.resamp_type, sync_now - query_begin,
                   resume_recovery);
-
-    if (clock_delay > 0)
-    {
-        aout_StopResampling (aout);
-        if (pi_clock_delay != NULL)
-            *pi_clock_delay = clock_delay;
-        msg_Warn (aout, "[pause-diag] action=resume_clock_delay cycle=%u"
-                  " delay_us=%"PRId64" drift_us=%"PRId64,
-                  owner->pause_diag.cycle, clock_delay, drift);
-        return;
-    }
 
     /* Late audio output.
      * This can happen due to insufficient caching, scheduling jitter
@@ -518,13 +453,9 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
 /*****************************************************************************
  * aout_DecPlay : filter & mix the decoded buffer
  *****************************************************************************/
-int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate,
-                  vlc_tick_t *pi_clock_delay)
+int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
 {
     aout_owner_t *owner = aout_owner (aout);
-
-    if (pi_clock_delay != NULL)
-        *pi_clock_delay = 0;
 
     assert (input_rate >= INPUT_RATE_DEFAULT / AOUT_MAX_INPUT_RATE);
     assert (input_rate <= INPUT_RATE_DEFAULT * AOUT_MAX_INPUT_RATE);
@@ -587,7 +518,7 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate,
     aout_volume_Amplify (owner->volume, block);
 
     /* Drift correction */
-    aout_DecSynchronize (aout, block->i_pts, input_rate, pi_clock_delay);
+    aout_DecSynchronize (aout, block->i_pts, input_rate);
 
     /* Output */
     owner->sync.end = block->i_pts + block->i_length + 1;

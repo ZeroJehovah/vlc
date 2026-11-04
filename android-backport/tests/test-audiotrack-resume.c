@@ -155,14 +155,32 @@ int main(int argc, char **argv)
         vlc_mutex_init(&sys.lock);
 #ifdef EXPECT_V23_BUFFER_GUARD
         vlc_mutex_init(&sys.write_lock);
+        sys.i_pause_date = VLC_TICK_INVALID;
+        sys.timestamp.i_frame_us = 12345;
+        sys.smoothpos.i_count = 2;
+        sys.smoothpos.p_us[0] = -1000;
+        sys.smoothpos.p_us[1] = -2000;
+        sys.smoothpos.i_us = -1500;
 #endif
         vlc_cond_init(&sys.thread_cond);
         vlc_cond_init(&sys.aout_cond);
-        Pause(&aout, true, mdate());
+        const vlc_tick_t pause_date = mdate() - CLOCK_FREQ;
+        Pause(&aout, true, pause_date);
         pthread_t worker;
         assert(pthread_create(&worker, NULL, AudioTrack_Thread, &aout) == 0);
         assert(WaitFlag(&waiting));
-        Pause(&aout, false, mdate());
+        const vlc_tick_t resume_date = mdate();
+        Pause(&aout, false, resume_date);
+#ifdef EXPECT_V23_BUFFER_GUARD
+        const vlc_tick_t pause_duration = resume_date - pause_date;
+        vlc_mutex_lock(&sys.lock);
+        assert(sys.i_pause_date == VLC_TICK_INVALID);
+        assert(sys.timestamp.i_frame_us == 12345 + pause_duration);
+        assert(sys.smoothpos.p_us[0] == -1000 - pause_duration);
+        assert(sys.smoothpos.p_us[1] == -2000 - pause_duration);
+        assert(sys.smoothpos.i_us == -1500 - pause_duration);
+        vlc_mutex_unlock(&sys.lock);
+#endif
         bool progressed = WaitFlag(&wrote);
         if (old) {
             assert(!progressed);

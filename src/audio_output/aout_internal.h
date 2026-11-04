@@ -233,8 +233,7 @@ bool aout_ChangeFilterString( vlc_object_t *manager, vlc_object_t *aout,
 int aout_DecNew(audio_output_t *, const audio_sample_format_t *,
                 const audio_replay_gain_t *, const aout_request_vout_t *);
 void aout_DecDelete(audio_output_t *);
-int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate,
-                 vlc_tick_t *pi_clock_delay);
+int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate);
 void aout_DecGetResetStats(audio_output_t *, unsigned *, unsigned *);
 void aout_DecChangePause(audio_output_t *, bool b_paused, vlc_tick_t i_date);
 void aout_DecFlush(audio_output_t *, bool wait);
