@@ -146,6 +146,7 @@ struct aout_sys_t {
                              * Pause() */
     bool b_thread_waiting;  /* If true, the thread is waiting for enough spaces
                              * in AudioTrack internal buffers */
+    vlc_tick_t i_resume_notify; /* diagnostic: first writer activity on resume */
 
     uint64_t i_samples_written; /* Number of samples written since last flush */
     bool b_audiotrack_exception; /* True if audiotrack threw an exception */
@@ -637,6 +638,7 @@ AudioTrack_Reset( JNIEnv *env, audio_output_t *p_aout )
     AudioTrack_ResetPositions( env, p_aout );
     AudioTrack_ResetPlaybackHeadPosition( env, p_aout );
     p_sys->i_samples_written = 0;
+    p_sys->i_resume_notify = VLC_TICK_INVALID;
 }
 
 /**
@@ -1798,6 +1800,15 @@ AudioTrack_Thread( void *p_data )
         i_data_size = __MIN( p_sys->circular.i_size - i_data_offset,
                              p_sys->circular.i_write - p_sys->circular.i_read );
 
+        if( p_sys->i_resume_notify != VLC_TICK_INVALID )
+        {
+            const vlc_tick_t now = mdate();
+            msg_Info( p_aout, "[pause-fix] writer_resumed now_us=%"PRId64
+                      " wake_delay_us=%"PRId64" queued_us=%"PRId64,
+                      now, now - p_sys->i_resume_notify,
+                      BYTES_TO_US( p_sys->circular.i_write - p_sys->circular.i_read ) );
+            p_sys->i_resume_notify = VLC_TICK_INVALID;
+        }
         i_ret = AudioTrack_Play( env, p_aout, i_data_size, i_data_offset,
                                  b_forced );
         if( i_ret >= 0 )
@@ -1989,6 +2000,16 @@ Pause( audio_output_t *p_aout, bool b_pause, vlc_tick_t i_date )
         AudioTrack_ResetPositions( env, p_aout );
         JNI_AT_CALL_VOID( play );
         CHECK_AT_EXCEPTION( "play" );
+        /* The writer may be sleeping on b_thread_paused with audio already in
+         * the circular buffer. Changing the predicate alone leaves it asleep
+         * until a new decoded block happens to signal it. */
+        p_sys->i_resume_notify = mdate();
+        vlc_cond_signal( &p_sys->thread_cond );
+        msg_Info( p_aout, "[pause-fix] resume_notify now_us=%"PRId64
+                  " queued_us=%"PRId64" error=%d",
+                  p_sys->i_resume_notify,
+                  BYTES_TO_US( p_sys->circular.i_write - p_sys->circular.i_read ),
+                  p_sys->b_error );
     }
 
 bailout:
