@@ -5,7 +5,9 @@ jni_root=$task_root/libvlcjni
 core=$jni_root/vlc
 build=$core/build-android-aarch64-linux-android
 contrib=$core/contrib/aarch64-linux-android
-modules=$(find "$build/install/lib/vlc/plugins" -name 'lib*plugin.a' -print | tr '\n' ' ')
+# make install leaves category subdirectories alongside old, renamed archives.
+# Refresh the allowlisted modules from the build tree into a separate directory.
+modules=$(python3 "$task_root/prepare-static-plugins.py" "$build")
 libs=$(cd "$contrib/lib/pkgconfig" && PKG_CONFIG_LIBDIR="$contrib/lib/pkgconfig" \
     PKG_CONFIG_PATH="$contrib/lib/pkgconfig" pkg-config --libs $(ls *.pc | sed 's/\.pc$//'))
 "$task_root/toolchain/native-ndk-build.sh" "$@" -j4 -C "$jni_root/libvlc" \
