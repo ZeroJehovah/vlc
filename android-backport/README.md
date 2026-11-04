@@ -48,6 +48,8 @@ Contrib 包：<https://artifacts.videolan.org/vlc-3.0/android-arm64/vlc-contrib-
 
 在干净的、对应提交的应用/JNI 工作树中，分别运行 `git apply` 应用 `patches/vlc-android.patch`、`patches/libvlcjni.patch`。先用 `git apply --check` 确认基线。把 `workspace/` 的内容复制到工作区根目录。不要在已有修改的工作树重复应用补丁。
 
+应用的 Gradle 设置需要 `app-stable/libvlcjni`；在干净应用目录运行 `ln -s ../libvlcjni libvlcjni`，指向上述相邻 JNI 工作树。
+
 ARM 主机使用本机 LLVM/Clang/LLD 18 配合官方 NDK sysroot；`toolchain/adapt-ndk.sh` 为本工作区修改 NDK 主机工具入口。SDK 的 AAPT2/AIDL/zipalign 使用 QEMU x86_64。`prepare-x86-runtime.py` 读取 Ubuntu noble amd64 的 `Packages.gz`（保存为 `toolchain/amd64-packages.gz`），校验包 SHA-256 后解压到 `toolchain/x86-root/`。创建 `toolchain/host-tools/aapt2` 指向 `../aapt2-qemu.sh`；原 SDK `aidl` 保存为 `aidl.x86-original` 后用 `sdk-qemu.sh` 包装。不要对系统 SDK/NDK 执行这些任务目录专用适配。
 
 在 `app-stable/local.properties` 配置：
@@ -104,3 +106,5 @@ sh test-logger/run.sh
 AudioTrack 测试支持 `VLC_CORE_DIR`、`VLC_NDK_DIR`、`JAVA_HOME`、`TEST_OUTPUT` 和 `CC` 覆盖路径。负对照确认旧源码在队列已有 200ms PCM 时仍会等待后续信号；修复后 20 次均无需新解码数据就能发出完整 PCM，通过 ASan/UBSan。模拟 JNI 的测试无法证明手机厂商音频栈上的卡顿已经解决。
 
 手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。重点观察 `[pause-fix] resume_notify` / `writer_resumed` 以及后续是否仍有 `flush_late` / `insert_silence`。
+
+`releases/resume-fix1.json` 保存交付 APK 的 SHA-256、原生库哈希、播放源码提交和校验项目；APK 本身保存在构建工作区 `artifacts/resume-fix1/`。Release 编译、lint、覆盖升级签名身份、实际打包的修复字符串与日志服务声明均已检查；真机结果仍待反馈。

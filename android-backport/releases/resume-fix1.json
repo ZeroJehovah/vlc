@@ -1,0 +1,42 @@
+{
+  "apk": "VLC-3.7.2-resume-fix1-arm64-v8a.apk",
+  "bytes": 49690820,
+  "sha256": "c8aea515c30e81bc28123ce01d801fd7aa10ecd6dfe9ce6e8b4c262c4267e4f4",
+  "package": "org.videolan.vlc.aaudio",
+  "version_name": "3.7.2-resume-fix1",
+  "version_code": 13070203,
+  "abi": "arm64-v8a",
+  "core_version": "3.0.25",
+  "native_sha256": {
+    "libvlc.so": "15707a30166349d45aa7e98facb4ed9efc34b7bc7a0aaef08e8d856ae340e6a2",
+    "libvlcjni.so": "6f1242e487875404e44e75ed1e2d3bcd7bf9715ff01cd9429c70d24af635e888",
+    "libc++_shared.so": "f9992c4ba6b7c5a716e3a202fceb1ce029d6a2b0605838ac6b3219f489dd7970",
+    "libmla.so": "423c9cc37c780fec209d1f6243cecb0feff60bd435176d8049a64c13aaf035c9"
+  },
+  "updates_previous_personal_build": true,
+  "purpose": "Wake AudioTrack writer on resume with retained PCM; preserve normal drift correction",
+  "diagnostic_window_seconds": 5,
+  "max_samples_per_resume_per_stage": 32,
+  "max_audio_correction_events_per_resume": 48,
+  "app_commit": "e5740f713d995f6c8e7d92e64134abc3a3b6987d",
+  "jni_commit": "0b8dc65efb203c86a0476bc337ddd99ecf1c0ef6",
+  "core_commit_before_android_patches": "84177b2273abc5c4300234e6e18b55a4d2dd5a03",
+  "core_source_commit": "ae8511e4c02536b6838b3749d11c6ffa36dff03b",
+  "fork_branch": "android/3.7.2-resume-fix",
+  "checks": [
+    "Release assembly and lint",
+    "APK signature v2",
+    "same signing certificate",
+    "increased version code",
+    "16KB ZIP alignment",
+    "arm64 ELF",
+    "custom native library hashes",
+    "diagnostic and resume fix markers",
+    "unchanged medialibrary/runtime",
+    "original AudioTrack source reproduces retained-queue stall",
+    "fixed writer resumes without new data: 20 runs, ASan/UBSan",
+    "packaged logger service declares dataSync and specialUse",
+    "logger repair code in DEX"
+  ],
+  "device_tested": false
+}
