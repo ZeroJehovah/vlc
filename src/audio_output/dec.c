@@ -36,6 +36,7 @@
 
 #include "aout_internal.h"
 #include "libvlc.h"
+#include "../clock/clock.h"
 
 /**
  * Creates an audio output
@@ -43,7 +44,8 @@
 int aout_DecNew( audio_output_t *p_aout,
                  const audio_sample_format_t *p_format,
                  const audio_replay_gain_t *p_replay_gain,
-                 const aout_request_vout_t *p_request_vout )
+                 const aout_request_vout_t *p_request_vout,
+                 vlc_clock_t *clock, bool master )
 {
     if( p_format->i_bitspersample > 0 )
     {
@@ -75,6 +77,13 @@ int aout_DecNew( audio_output_t *p_aout,
 
     /* TODO: reduce lock scope depending on decoder's real need */
     aout_OutputLock (p_aout);
+    vlc_mutex_lock(&owner->timing.lock);
+    owner->timing.clock = clock;
+    owner->timing.master = master;
+    owner->timing.paused = false;
+    owner->timing.pause_date = VLC_TICK_INVALID;
+    aout_TimingReset(&owner->timing, p_format->i_rate);
+    vlc_mutex_unlock(&owner->timing.lock);
 
     /* Create the audio output stream */
     owner->volume = aout_volume_New (p_aout, p_replay_gain);
@@ -100,6 +109,9 @@ int aout_DecNew( audio_output_t *p_aout,
     {
         aout_OutputDelete (p_aout);
 error:
+        vlc_mutex_lock(&owner->timing.lock);
+        owner->timing.clock = NULL;
+        vlc_mutex_unlock(&owner->timing.lock);
         aout_volume_Delete (owner->volume);
         owner->volume = NULL;
         aout_OutputUnlock (p_aout);
@@ -107,6 +119,12 @@ error:
     }
 
 
+    vlc_mutex_lock(&owner->timing.lock);
+    aout_TimingReset(&owner->timing, owner->mixer_format.i_rate);
+    vlc_mutex_unlock(&owner->timing.lock);
+    if (clock)
+        msg_Info(p_aout, "[v4-clock] enabled master=%d native_timing=%d", master,
+                 p_aout->timing_reports);
     owner->sync.end = VLC_TICK_INVALID;
     owner->sync.resamp_type = AOUT_RESAMPLING_NONE;
     owner->sync.discontinuity = true;
@@ -144,6 +162,10 @@ void aout_DecDelete (audio_output_t *aout)
     }
     aout_volume_Delete (owner->volume);
     owner->volume = NULL;
+    vlc_mutex_lock(&owner->timing.lock);
+    owner->timing.clock = NULL;
+    aout_TimingReset(&owner->timing, 0);
+    vlc_mutex_unlock(&owner->timing.lock);
     aout_OutputUnlock (aout);
 }
 
@@ -169,6 +191,9 @@ static int aout_CheckReady (audio_output_t *aout)
             owner->filters_cfg = AOUT_FILTERS_CFG_INIT;
             if (aout_OutputNew (aout, &owner->mixer_format, &owner->filters_cfg))
                 owner->mixer_format.i_format = 0;
+            vlc_mutex_lock(&owner->timing.lock);
+            aout_TimingReset(&owner->timing, owner->mixer_format.i_rate);
+            vlc_mutex_unlock(&owner->timing.lock);
             aout_volume_SetFormat (owner->volume,
                                    owner->mixer_format.i_format);
 
@@ -469,7 +494,18 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
     if (unlikely(ret == AOUT_DEC_FAILED))
         goto drop; /* Pipeline is unrecoverably broken :-( */
 
-    const vlc_tick_t now = mdate (), advance = block->i_pts - now;
+    const bool output_clock = owner->timing.clock != NULL;
+    const double rate = (double)INPUT_RATE_DEFAULT / input_rate;
+    const vlc_tick_t now = mdate ();
+    vlc_tick_t play_date = block->i_pts;
+    if (output_clock)
+    {
+        vlc_clock_Lock(owner->timing.clock);
+        play_date = vlc_clock_ConvertToSystem(owner->timing.clock, now,
+                                              block->i_pts, rate, NULL);
+        vlc_clock_Unlock(owner->timing.clock);
+    }
+    const vlc_tick_t advance = play_date - now;
     const vlc_tick_t gap = owner->pause_diag.last_buffer_date == VLC_TICK_INVALID
                          ? 0 : now - owner->pause_diag.last_buffer_date;
     owner->pause_diag.last_buffer_date = now;
@@ -481,7 +517,7 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
                   owner->pause_diag.cycle, owner->pause_diag.samples, now,
                   now - owner->pause_diag.resume_date, gap, block->i_pts,
                   advance, block->i_length, block->i_flags, owner->sync.end);
-    if (advance < -AOUT_MAX_PTS_DELAY)
+    if (!output_clock && advance < -AOUT_MAX_PTS_DELAY)
     {   /* Late buffer can be caused by bugs in the decoder, by scheduling
          * latency spikes (excessive load, SIGSTOP, etc.) or if buffering is
          * insufficient. We assume the PTS is wrong and play the buffer anyway:
@@ -492,7 +528,7 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
                       " advance_us=%"PRId64, owner->pause_diag.cycle, advance);
         goto drop;
     }
-    if (advance > AOUT_MAX_ADVANCE_TIME)
+    if (!output_clock && advance > AOUT_MAX_ADVANCE_TIME)
     {   /* Early buffers can only be caused by bugs in the decoder. */
         msg_Err (aout, "buffer too early (%"PRId64" us): dropped", advance);
         if (vlc_pause_diag_Event (&owner->pause_diag))
@@ -517,12 +553,45 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
     /* Software volume */
     aout_volume_Amplify (owner->volume, block);
 
-    /* Drift correction */
-    aout_DecSynchronize (aout, block->i_pts, input_rate);
+    if (output_clock)
+    {
+        /* Legacy backends report queued duration. Adapt it to a consumed
+         * position; native backends send their timestamp directly. */
+        if (!aout->timing_reports)
+        {
+            vlc_tick_t delay;
+            if (aout_OutputTimeGet(aout, &delay) == 0 && delay >= 0)
+            {
+                const vlc_tick_t system = mdate();
+                vlc_mutex_lock(&owner->timing.lock);
+                uint64_t queued = (uint64_t)delay * owner->mixer_format.i_rate / CLOCK_FREQ;
+                if (queued <= owner->timing.samples)
+                    aout_TimingUpdate(&owner->timing, system,
+                                      owner->timing.samples - queued);
+                vlc_mutex_unlock(&owner->timing.lock);
+            }
+        }
+        vlc_clock_Lock(owner->timing.clock);
+        play_date = vlc_clock_ConvertToSystem(owner->timing.clock, mdate(),
+                                              block->i_pts, rate, NULL);
+        vlc_clock_Unlock(owner->timing.clock);
+        if (!owner->timing.master)
+            aout_DecSynchronize(aout, play_date, input_rate);
+        if (!aout_TimingQueue(&owner->timing, block->i_pts, block->i_nb_samples, rate))
+            goto drop;
+    }
+    else
+        aout_DecSynchronize (aout, block->i_pts, input_rate);
 
     /* Output */
     owner->sync.end = block->i_pts + block->i_length + 1;
     owner->sync.discontinuity = false;
+    if (output_clock)
+    {
+        block->i_pts = block->i_dts = play_date;
+        block->i_length = (vlc_tick_t)block->i_nb_samples * CLOCK_FREQ /
+                          owner->mixer_format.i_rate;
+    }
     aout_OutputPlay (aout, block);
     atomic_fetch_add(&owner->buffers_played, 1);
 out:
@@ -557,7 +626,7 @@ void aout_DecChangePause (audio_output_t *aout, bool paused, vlc_tick_t date)
               " end_us=%"PRId64" active=%d custom_pause=%d",
               owner->pause_diag.cycle, paused, date, begin, begin - date,
               old_end, owner->mixer_format.i_format != 0, aout->pause != NULL);
-    if (owner->sync.end != VLC_TICK_INVALID)
+    if (!owner->timing.clock && owner->sync.end != VLC_TICK_INVALID)
     {
         if (paused)
             owner->sync.end -= date;
@@ -565,10 +634,26 @@ void aout_DecChangePause (audio_output_t *aout, bool paused, vlc_tick_t date)
             owner->sync.end += date;
     }
     const vlc_tick_t backend_begin = mdate ();
+    vlc_mutex_lock(&owner->timing.lock);
+    if (paused)
+    {
+        owner->timing.pause_date = date;
+        owner->timing.paused = true;
+    }
+    else
+    {
+        if (owner->timing.last_system != VLC_TICK_INVALID &&
+            owner->timing.pause_date != VLC_TICK_INVALID)
+            owner->timing.last_system += date - owner->timing.pause_date;
+        owner->timing.pause_date = VLC_TICK_INVALID;
+        owner->timing.cutoff = date; /* reject pre-resume hardware timestamps */
+        owner->timing.paused = false;
+    }
+    vlc_mutex_unlock(&owner->timing.lock);
     if (owner->mixer_format.i_format)
         aout_OutputPause (aout, paused, date);
 
-    owner->sync.resume_recovery = !paused;
+    owner->sync.resume_recovery = !paused && !owner->timing.clock;
     owner->sync.resume_stable_samples = 0;
     owner->sync.resume_date = paused ? VLC_TICK_INVALID : begin;
     owner->sync.resume_clock_candidate = VLC_TICK_INVALID;
@@ -607,7 +692,21 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
         {
             block_t *block = aout_FiltersDrain (owner->filters);
             if (block)
+            {
+                if (owner->timing.clock)
+                {
+                    vlc_mutex_lock(&owner->timing.lock);
+                    const double rate = owner->timing.queued_rate;
+                    vlc_mutex_unlock(&owner->timing.lock);
+                    aout_TimingQueue(&owner->timing, block->i_pts,
+                                     block->i_nb_samples, rate);
+                    vlc_clock_Lock(owner->timing.clock);
+                    block->i_pts = vlc_clock_ConvertToSystem(owner->timing.clock,
+                        mdate(), block->i_pts, rate, NULL);
+                    vlc_clock_Unlock(owner->timing.clock);
+                }
                 aout_OutputPlay (aout, block);
+            }
         }
         else
             aout_FiltersFlush (owner->filters);

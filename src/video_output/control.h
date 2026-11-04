@@ -26,6 +26,7 @@
 
 #include <vlc_vout_window.h>
 #include <vlc_viewpoint.h>
+#include <vlc_clock.h>
 
 /* */
 enum {
@@ -33,6 +34,8 @@ enum {
     VOUT_CONTROL_CLEAN,
     VOUT_CONTROL_REINIT,                /* cfg */
     VOUT_CONTROL_CANCEL,
+    VOUT_CONTROL_CLOCK,
+    VOUT_CONTROL_CLOCK_RATE,
 
 #if 0
     /* */
@@ -70,6 +73,8 @@ typedef struct {
 
     union {
         bool    boolean;
+        vlc_clock_t *clock;
+        double rate;
         vlc_tick_t time;
         vlc_tick_t *time_ptr;
         char    *string;

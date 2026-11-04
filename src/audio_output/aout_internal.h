@@ -26,6 +26,7 @@
 
 # include <vlc_atomic.h>
 # include <vlc_viewpoint.h>
+# include "timing.h"
 
 /* Max input rate factor (1/4 -> 4) */
 # define AOUT_MAX_INPUT_RATE (4)
@@ -162,6 +163,7 @@ typedef struct
     } sync;
 
     vlc_pause_diag_t pause_diag;
+    aout_timing_t timing;
 
     int initial_stereo_mode; /**< Initial stereo mode set by options */
 
@@ -231,7 +233,8 @@ bool aout_ChangeFilterString( vlc_object_t *manager, vlc_object_t *aout,
 #define AOUT_DEC_FAILED VLC_EGENERIC
 
 int aout_DecNew(audio_output_t *, const audio_sample_format_t *,
-                const audio_replay_gain_t *, const aout_request_vout_t *);
+                const audio_replay_gain_t *, const aout_request_vout_t *,
+                vlc_clock_t *, bool master);
 void aout_DecDelete(audio_output_t *);
 int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate);
 void aout_DecGetResetStats(audio_output_t *, unsigned *, unsigned *);

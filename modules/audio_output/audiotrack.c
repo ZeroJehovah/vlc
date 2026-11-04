@@ -110,6 +110,10 @@ struct aout_sys_t {
         vlc_tick_t i_play_time; /* time when play was called */
         vlc_tick_t i_last_time;
     } timestamp;
+    struct {
+        uint32_t last, wraps;
+        vlc_tick_t next_query, cutoff;
+    } timing;
 
     /* Used by AudioTrack_GetSmoothPositionUs */
     struct {
@@ -231,6 +235,7 @@ static struct
         jmethodID getAudioSessionId;
         jmethodID getPlaybackHeadPosition;
         jmethodID getTimestamp;
+        jmethodID getLatency;
         jmethodID getMinBufferSize;
         jmethodID getNativeOutputSampleRate;
         jmethodID setVolume;
@@ -357,6 +362,7 @@ InitJNIFields( audio_output_t *p_aout, JNIEnv* env )
     GET_ID( GetMethodID, AudioTrack.stop, "stop", "()V", true );
     GET_ID( GetMethodID, AudioTrack.flush, "flush", "()V", true );
     GET_ID( GetMethodID, AudioTrack.pause, "pause", "()V", true );
+    GET_ID( GetMethodID, AudioTrack.getLatency, "getLatency", "()I", false );
 
     GET_ID( GetMethodID, AudioTrack.writeV23, "write", "([BIII)I", false );
     GET_ID( GetMethodID, AudioTrack.writeShortV23, "write", "([SIII)I", false );
@@ -644,30 +650,6 @@ AudioTrack_ResetPositions( JNIEnv *env, audio_output_t *p_aout )
     p_sys->smoothpos.i_latency_us = 0;
 }
 
-/* AudioTrack's timestamp and smoothed-head samples are based on the system
- * clock.  That clock keeps running while playback is paused, but the AudioTrack
- * head does not.  Shift cached points by the pause duration at resume, as VLC 4
- * does for its output timing, so the first timing query after resume does not
- * extrapolate audio through the paused interval and trigger a bogus reset. */
-static void
-AudioTrack_ApplyPauseDelay( audio_output_t *p_aout, vlc_tick_t i_delay )
-{
-    aout_sys_t *p_sys = p_aout->sys;
-
-    if( i_delay <= 0 )
-        return;
-
-    if( p_sys->timestamp.i_frame_us != 0 )
-        p_sys->timestamp.i_frame_us += i_delay;
-    p_sys->timestamp.i_last_time = 0;
-
-    for( uint32_t i = 0; i < p_sys->smoothpos.i_count; ++i )
-        p_sys->smoothpos.p_us[i] -= i_delay;
-    if( p_sys->smoothpos.i_count != 0 )
-        p_sys->smoothpos.i_us -= i_delay;
-    p_sys->smoothpos.i_last_time = 0;
-}
-
 /**
  * Reset all AudioTrack positions and internal state
  */
@@ -683,6 +665,9 @@ AudioTrack_Reset( JNIEnv *env, audio_output_t *p_aout )
     p_sys->i_write_generation++;
     p_sys->i_resume_notify = VLC_TICK_INVALID;
     p_sys->i_pause_date = VLC_TICK_INVALID;
+    p_sys->timing.last = p_sys->timing.wraps = 0;
+    p_sys->timing.next_query = 0;
+    p_sys->timing.cutoff = mdate();
 }
 
 /**
@@ -1338,7 +1323,6 @@ Start( audio_output_t *p_aout, audio_sample_format_t *restrict p_fmt )
 
     p_sys->i_max_audiotrack_samples = BYTES_TO_FRAMES( p_sys->audiotrack_args.i_size );
 
-#ifdef AUDIOTRACK_HW_LATENCY
     if( jfields.AudioTimestamp.clazz )
     {
         /* create AudioTimestamp object */
@@ -1352,9 +1336,8 @@ Start( audio_output_t *p_aout, audio_sample_format_t *restrict p_fmt )
         if( !p_sys->timestamp.p_obj )
             goto error;
     }
-#endif
-
     AudioTrack_Reset( env, p_aout );
+    p_aout->timing_reports = !p_sys->b_passthrough;
 
     if( p_sys->fmt.i_format == VLC_CODEC_FL32 )
     {
@@ -1868,6 +1851,62 @@ AudioTrack_Play( JNIEnv *env, audio_output_t *p_aout, size_t i_data_size,
     return AudioTrack_HandleWriteResult( env, p_aout, i_ret );
 }
 
+/* Adapted from VLC 4 AudioTrack_ReportTiming(). Do not extrapolate a smoothed
+ * head through resume; report the device's (system date, frame position) pair. */
+static void AudioTrack_ReportTiming( JNIEnv *env, audio_output_t *aout )
+{
+    aout_sys_t *p_sys = aout->sys;
+    vlc_tick_t now = mdate(), system = now;
+    if( !aout->timing_reports || !aout->event.timing_report ||
+        p_sys->b_thread_paused || p_sys->b_backend_paused || p_sys->b_flushing ||
+        now < p_sys->timing.next_query )
+        return;
+    p_sys->timing.next_query = now + CLOCK_FREQ / 50;
+    uint64_t position;
+    bool hardware = false;
+    if( p_sys->timestamp.p_obj &&
+        JNI_AT_CALL_BOOL( getTimestamp, p_sys->timestamp.p_obj ) )
+    {
+        hardware = true;
+        system = JNI_AUDIOTIMESTAMP_GET_LONG( nanoTime ) / 1000;
+        uint32_t frame = (uint32_t)JNI_AUDIOTIMESTAMP_GET_LONG( framePosition );
+        if( !frame || system < p_sys->timing.cutoff )
+            return;
+        if( frame < p_sys->timing.last )
+            p_sys->timing.wraps++;
+        p_sys->timing.last = frame;
+        position = frame + ((uint64_t)p_sys->timing.wraps << 32);
+    }
+    else
+    {
+        position = AudioTrack_getPlaybackHeadPosition( env, aout );
+        /* Like VLC 4, subtract hardware latency from a raw head fallback. */
+        if( jfields.AudioTrack.getLatency )
+        {
+            int latency_ms = JNI_AT_CALL_INT( getLatency );
+            if( check_exception( env, aout, "getLatency" ) )
+                return;
+            vlc_tick_t latency = latency_ms * INT64_C(1000)
+                              - FRAMES_TO_US( p_sys->i_max_audiotrack_samples );
+            if( latency > 0 )
+            {
+                uint64_t frames = (uint64_t)latency * p_sys->fmt.i_rate / CLOCK_FREQ;
+                if( position <= frames )
+                    return;
+                position -= frames;
+            }
+        }
+    }
+    if( !position || position > p_sys->i_samples_written )
+        return;
+    aout->event.timing_report( aout, system, position );
+    msg_Dbg(aout, "[v4-clock] AudioTrack source=%s system_us=%"PRId64
+            " position=%"PRIu64" written=%"PRIu64,
+            hardware ? "timestamp" : "raw-head", system, position,
+            p_sys->i_samples_written);
+    p_sys->timing.next_query = now + CLOCK_FREQ;
+}
+
 /**
  * This thread will play the data coming from the circular buffer.
  */
@@ -1937,6 +1976,7 @@ AudioTrack_Thread( void *p_data )
                     vlc_mutex_unlock( &p_sys->lock );
                     break;
                 }
+                AudioTrack_ReportTiming( env, p_aout );
 
                 const uint64_t i_audiotrack_pos =
                     AudioTrack_getPlaybackHeadPosition( env, p_aout );
@@ -2085,6 +2125,7 @@ AudioTrack_Thread( void *p_data )
                 p_sys->i_samples_inflight = 0;
             }
             vlc_cond_signal( &p_sys->aout_cond );
+            AudioTrack_ReportTiming( env, p_aout );
             vlc_mutex_unlock( &p_sys->lock );
             vlc_mutex_unlock( &p_sys->write_lock );
             continue;
@@ -2176,6 +2217,7 @@ AudioTrack_Thread( void *p_data )
         }
 
         vlc_cond_signal( &p_sys->aout_cond );
+        AudioTrack_ReportTiming( env, p_aout );
         vlc_mutex_unlock( &p_sys->lock );
     }
 
@@ -2366,20 +2408,10 @@ Pause( audio_output_t *p_aout, bool b_pause, vlc_tick_t i_date )
     } else
     {
         vlc_mutex_lock( &p_sys->lock );
-        const vlc_tick_t i_pause_duration =
-            p_sys->i_pause_date != VLC_TICK_INVALID && i_date > p_sys->i_pause_date
-          ? i_date - p_sys->i_pause_date : 0;
-        if( p_sys->i_pause_date != VLC_TICK_INVALID )
-        {
-            AudioTrack_ApplyPauseDelay( p_aout, i_pause_duration );
-            msg_Info( p_aout, "[pause-fix] timing_shift duration_us=%"PRId64
-                      " timestamp_us=%"PRId64" smooth_us=%"PRId64,
-                      i_pause_duration, p_sys->timestamp.i_frame_us,
-                      p_sys->smoothpos.i_us );
-            p_sys->i_pause_date = VLC_TICK_INVALID;
-        }
-        else
-            AudioTrack_ResetPositions( env, p_aout );
+        AudioTrack_ResetPositions( env, p_aout );
+        p_sys->i_pause_date = VLC_TICK_INVALID;
+        p_sys->timing.cutoff = i_date;
+        p_sys->timing.next_query = 0;
         vlc_mutex_unlock( &p_sys->lock );
         JNI_AT_CALL_VOID( play );
         CHECK_AT_EXCEPTION( "play" );
@@ -2483,8 +2515,11 @@ Flush( audio_output_t *p_aout, bool b_wait )
         }
     }
     AudioTrack_Reset( env, p_aout );
-    JNI_AT_CALL_VOID( play );
-    CHECK_AT_EXCEPTION( "play" );
+    if( !p_sys->b_thread_paused )
+    {
+        JNI_AT_CALL_VOID( play );
+        CHECK_AT_EXCEPTION( "play" );
+    }
     p_sys->b_flushing = false;
     vlc_cond_signal( &p_sys->thread_cond );
     vlc_mutex_unlock( &p_sys->lock );

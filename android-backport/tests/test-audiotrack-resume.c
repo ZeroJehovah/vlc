@@ -13,6 +13,83 @@ static size_t bytes_written;
 static unsigned write_calls, head_position;
 static aout_sys_t *active;
 static int play_method, pause_method, write_method, head_method;
+#ifdef EXPECT_V23_BUFFER_GUARD
+static int timestamp_method, frame_field, time_field;
+static bool timestamp_available;
+static jlong timestamp_frame, timestamp_ns;
+static unsigned timing_reports;
+static vlc_tick_t reported_date;
+static uint64_t reported_position;
+
+static jboolean MockCallBoolean(JNIEnv *env, jobject obj, jmethodID method, ...)
+{
+    (void)env; (void)obj;
+    assert(method == (jmethodID)&timestamp_method);
+    return timestamp_available;
+}
+static jlong MockGetLong(JNIEnv *env, jobject obj, jfieldID field)
+{
+    (void)env; (void)obj;
+    return field == (jfieldID)&frame_field ? timestamp_frame : timestamp_ns;
+}
+static void CaptureTiming(audio_output_t *a, vlc_tick_t date, uint64_t position)
+{
+    (void)a;
+    timing_reports++;
+    reported_date = date;
+    reported_position = position;
+}
+
+static void TestDeviceTiming(JNIEnv *env)
+{
+    aout_sys_t sys = {0};
+    audio_output_t a = { .sys = &sys, .timing_reports = true };
+    a.event.timing_report = CaptureTiming;
+    sys.fmt.i_rate = 48000;
+    sys.i_samples_written = 96000;
+    sys.timestamp.p_obj = (jobject)&sys;
+    jfields.AudioTrack.getTimestamp = (jmethodID)&timestamp_method;
+    jfields.AudioTimestamp.framePosition = (jfieldID)&frame_field;
+    jfields.AudioTimestamp.nanoTime = (jfieldID)&time_field;
+    sys.timing.cutoff = mdate() - CLOCK_FREQ;
+    timestamp_available = true;
+    timestamp_frame = 48000;
+    timestamp_ns = (sys.timing.cutoff - 1) * 1000;
+    AudioTrack_ReportTiming(env, &a);
+    assert(timing_reports == 0); /* cached pre-resume timestamp */
+    timestamp_ns = (sys.timing.cutoff + 500000) * 1000;
+    timestamp_frame = 96001;
+    sys.timing.next_query = 0;
+    AudioTrack_ReportTiming(env, &a);
+    assert(timing_reports == 0); /* cannot report unsent audio */
+    timestamp_frame = 97000;
+    sys.i_samples_written = 100000;
+    sys.timing.next_query = 0;
+    AudioTrack_ReportTiming(env, &a);
+    assert(timing_reports == 1 && reported_position == 97000);
+    assert(reported_date == timestamp_ns / 1000); /* use device date, not now */
+    sys.b_thread_paused = true;
+    sys.timing.next_query = 0;
+    AudioTrack_ReportTiming(env, &a);
+    assert(timing_reports == 1);
+    sys.b_thread_paused = false;
+    timestamp_available = false;
+    head_position = 98000;
+    sys.timing.next_query = 0;
+    AudioTrack_ReportTiming(env, &a);
+    assert(timing_reports == 2 && reported_position == 98000);
+    /* The hardware counter is independent of raw-head queries and wraps. */
+    timestamp_available = true;
+    sys.timing.last = UINT32_MAX - 10;
+    timestamp_frame = 20;
+    sys.i_samples_written = (UINT64_C(1) << 32) + 100;
+    sys.timing.next_query = 0;
+    AudioTrack_ReportTiming(env, &a);
+    assert(timing_reports == 3 && reported_position == (UINT64_C(1) << 32) + 20);
+    jfields.AudioTrack.getTimestamp = NULL;
+    puts("PASS: actual AudioTrack timing rejects stale/unsent positions, preserves device dates, handles pause/raw-head/wrap");
+}
+#endif
 
 vlc_tick_t mdate(void)
 {
@@ -81,6 +158,10 @@ static jint MockCallInt(JNIEnv *env, jobject obj, jmethodID method, ...)
     return (jint)size;
 }
 static const struct JNINativeInterface_ jni = {
+#ifdef EXPECT_V23_BUFFER_GUARD
+    .CallBooleanMethod = MockCallBoolean,
+    .GetLongField = MockGetLong,
+#endif
     .ExceptionCheck = MockExceptionCheck,
     .GetByteArrayRegion = MockGetByteArrayRegion,
     .SetByteArrayRegion = MockSetByteArrayRegion,
@@ -172,13 +253,11 @@ int main(int argc, char **argv)
         const vlc_tick_t resume_date = mdate();
         Pause(&aout, false, resume_date);
 #ifdef EXPECT_V23_BUFFER_GUARD
-        const vlc_tick_t pause_duration = resume_date - pause_date;
         vlc_mutex_lock(&sys.lock);
         assert(sys.i_pause_date == VLC_TICK_INVALID);
-        assert(sys.timestamp.i_frame_us == 12345 + pause_duration);
-        assert(sys.smoothpos.p_us[0] == -1000 - pause_duration);
-        assert(sys.smoothpos.p_us[1] == -2000 - pause_duration);
-        assert(sys.smoothpos.i_us == -1500 - pause_duration);
+        assert(sys.timestamp.i_frame_us == 0);
+        assert(sys.smoothpos.i_count == 0);
+        assert(sys.timing.cutoff == resume_date);
         vlc_mutex_unlock(&sys.lock);
 #endif
         bool progressed = WaitFlag(&wrote);
@@ -221,4 +300,7 @@ int main(int argc, char **argv)
     }
     puts(old ? "PASS: original source stalls with queued PCM until an unrelated later signal"
              : "PASS: patched source sends retained PCM on resume, without a new decoded block (20 runs)");
+#ifdef EXPECT_V23_BUFFER_GUARD
+    TestDeviceTiming(&env);
+#endif
 }

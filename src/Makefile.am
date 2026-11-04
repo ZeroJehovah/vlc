@@ -28,6 +28,8 @@ pluginsinclude_HEADERS = \
 	../include/vlc_aout.h \
 	../include/vlc_aout_volume.h \
 	../include/vlc_arrays.h \
+	../include/vlc_clock.h \
+	../include/vlc_vector.h \
 	../include/vlc_atomic.h \
 	../include/vlc_avcodec.h \
 	../include/vlc_bits.h \
@@ -273,6 +275,8 @@ libvlccore_la_SOURCES = \
 	audio_output/aout_internal.h \
 	audio_output/common.c \
 	audio_output/dec.c \
+	audio_output/timing.c \
+	audio_output/timing.h \
 	audio_output/filters.c \
 	audio_output/output.c \
 	audio_output/volume.c \

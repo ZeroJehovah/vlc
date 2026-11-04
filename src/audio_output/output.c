@@ -34,6 +34,7 @@
 
 #include "libvlc.h"
 #include "aout_internal.h"
+#include "../clock/clock.h"
 
 static const char unset_str[1] = ""; /* Non-NULL constant string pointer */
 
@@ -207,6 +208,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
 
     vlc_mutex_init (&owner->lock);
     vlc_pause_diag_Init (&owner->pause_diag);
+    aout_TimingInit (&owner->timing);
     vlc_mutex_init (&owner->req.lock);
     vlc_mutex_init (&owner->dev.lock);
     vlc_mutex_init (&owner->vp.lock);
@@ -235,6 +237,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     aout->event.hotplug_report = aout_HotplugNotify;
     aout->event.gain_request = aout_GainNotify;
     aout->event.restart_request = aout_RestartNotify;
+    aout->event.timing_report = aout_TimingReport;
 
     /* Audio output module initialization */
     aout->start = NULL;
@@ -402,6 +405,7 @@ static void aout_Destructor (vlc_object_t *obj)
     vlc_mutex_destroy (&owner->vp.lock);
     vlc_mutex_destroy (&owner->req.lock);
     vlc_mutex_destroy (&owner->lock);
+    aout_TimingDestroy (&owner->timing);
 }
 
 static void aout_PrepareStereoMode (audio_output_t *aout,
@@ -567,6 +571,7 @@ int aout_OutputNew (audio_output_t *aout, audio_sample_format_t *restrict fmt,
     }
 
     aout->current_sink_info.headphones = false;
+    aout->timing_reports = false;
 
     if (aout->start (aout, fmt))
     {
@@ -671,6 +676,15 @@ void aout_OutputFlush( audio_output_t *aout, bool wait )
     const bool trace = vlc_pause_diag_Event (&owner->pause_diag);
     const vlc_tick_t begin = trace ? mdate () : VLC_TICK_INVALID;
     aout->flush (aout, wait);
+    vlc_mutex_lock(&owner->timing.lock);
+    aout_TimingReset(&owner->timing, owner->mixer_format.i_rate);
+    if (owner->timing.clock)
+    {
+        vlc_clock_Lock(owner->timing.clock);
+        vlc_clock_Reset(owner->timing.clock);
+        vlc_clock_Unlock(owner->timing.clock);
+    }
+    vlc_mutex_unlock(&owner->timing.lock);
     if (trace)
     {
         const vlc_tick_t end = mdate ();

@@ -27,6 +27,8 @@
 
 #include <vlc_common.h>
 #include <vlc_input.h> /* FIXME Needed for input_clock_t */
+#include <vlc_clock.h>
+#include <vlc_es.h>
 
 /** @struct input_clock_t
  * This structure is used to manage clock drift and reception jitters
@@ -41,6 +43,14 @@ typedef struct input_clock_t input_clock_t;
  * You must use input_clock_Delete to delete it once unused.
  */
 input_clock_t *input_clock_New( int i_rate );
+
+/* Shared output clock is enabled for sources whose reading pace we control.
+ * Unpaced live input and sout keep the VLC 3 input-clock path. */
+int input_clock_EnableOutput( input_clock_t * );
+bool input_clock_HasOutput( const input_clock_t * );
+vlc_clock_t *input_clock_CreateOutput( input_clock_t *, enum es_format_category_e,
+                                       bool *master );
+void input_clock_DeleteOutput( input_clock_t *, vlc_clock_t * );
 
 /**
  * This function destroys a input_clock_t created by input_clock_New.
@@ -93,15 +103,6 @@ void    input_clock_GetSystemOrigin( input_clock_t *, vlc_tick_t *pi_system, vlc
  * called imediatly after a input_clock_Update.
  */
 void    input_clock_ChangeSystemOrigin( input_clock_t *, bool b_absolute, vlc_tick_t i_system );
-
-/**
- * This function delays the stream-to-system mapping by i_delay.
- *
- * It is used after an output resumes late: future audio and video timestamps
- * are moved together so the video clock waits for the audio output without
- * flushing or skipping already queued samples.
- */
-void    input_clock_AddSystemDelay( input_clock_t *, vlc_tick_t i_delay );
 
 /**
  * This function converts a pair of timestamp from stream clock to system clock.

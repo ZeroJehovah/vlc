@@ -46,6 +46,9 @@
 /* */
 struct vout_thread_sys_t
 {
+    vlc_clock_t *clock; /* borrowed, used only by the display thread */
+    double clock_rate;
+    vlc_tick_t clock_next_log;
     /* Splitter module if used */
     char            *splitter_name;
 

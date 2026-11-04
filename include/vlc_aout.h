@@ -184,7 +184,10 @@ struct audio_output
         void (*hotplug_report)(audio_output_t *, const char *, const char *);
         int (*gain_request)(audio_output_t *, float);
         void (*restart_request)(audio_output_t *, unsigned);
+        /* Actual device position, in frames since start/flush, at system date. */
+        void (*timing_report)(audio_output_t *, vlc_tick_t, uint64_t);
     } event;
+    bool timing_reports; /* start() opts in; otherwise core adapts time_get */
 };
 
 typedef enum

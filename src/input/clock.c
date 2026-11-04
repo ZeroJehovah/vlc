@@ -33,6 +33,7 @@
 #include <vlc_common.h>
 #include <vlc_input.h>
 #include "clock.h"
+#include "../clock/clock.h"
 #include <assert.h>
 
 /* TODO:
@@ -141,6 +142,8 @@ static inline clock_point_t clock_point_Create( vlc_tick_t i_stream, vlc_tick_t 
 /* */
 struct input_clock_t
 {
+    vlc_clock_main_t *output;
+    vlc_clock_t *audio_master;
     /* */
     vlc_mutex_t lock;
 
@@ -177,7 +180,6 @@ struct input_clock_t
     bool    b_paused;
     int     i_rate;
     vlc_tick_t i_pts_delay;
-    vlc_tick_t i_system_delay;
     vlc_tick_t i_pause_date;
 };
 
@@ -196,6 +198,8 @@ input_clock_t *input_clock_New( int i_rate )
         return NULL;
 
     vlc_mutex_init( &cl->lock );
+    cl->output = NULL;
+    cl->audio_master = NULL;
     cl->b_has_reference = false;
     cl->ref = clock_point_Create( VLC_TICK_INVALID, VLC_TICK_INVALID );
     cl->b_has_external_clock = false;
@@ -215,7 +219,6 @@ input_clock_t *input_clock_New( int i_rate )
 
     cl->i_rate = i_rate;
     cl->i_pts_delay = 0;
-    cl->i_system_delay = 0;
     cl->b_paused = false;
     cl->i_pause_date = VLC_TICK_INVALID;
 
@@ -227,9 +230,55 @@ input_clock_t *input_clock_New( int i_rate )
  *****************************************************************************/
 void input_clock_Delete( input_clock_t *cl )
 {
+    if( cl->output )
+        vlc_clock_main_Delete( cl->output );
     AvgClean( &cl->drift );
     vlc_mutex_destroy( &cl->lock );
     free( cl );
+}
+
+int input_clock_EnableOutput( input_clock_t *cl )
+{
+    assert( cl->output == NULL );
+    cl->output = vlc_clock_main_New( NULL, NULL );
+    return cl->output ? VLC_SUCCESS : VLC_ENOMEM;
+}
+
+bool input_clock_HasOutput( const input_clock_t *cl )
+{
+    return cl->output != NULL;
+}
+
+vlc_clock_t *input_clock_CreateOutput( input_clock_t *cl,
+                                       enum es_format_category_e cat,
+                                       bool *master )
+{
+    *master = false;
+    if( cl->output == NULL )
+        return NULL;
+    vlc_mutex_lock( &cl->lock );
+    vlc_clock_main_Lock( cl->output );
+    vlc_clock_t *clock;
+    if( cat == AUDIO_ES && cl->audio_master == NULL )
+    {
+        clock = vlc_clock_main_CreateMaster( cl->output, NULL, NULL, NULL );
+        cl->audio_master = clock;
+        *master = clock != NULL;
+    }
+    else
+        clock = vlc_clock_main_CreateSlave( cl->output, NULL, cat, NULL, NULL );
+    vlc_clock_main_Unlock( cl->output );
+    vlc_mutex_unlock( &cl->lock );
+    return clock;
+}
+
+void input_clock_DeleteOutput( input_clock_t *cl, vlc_clock_t *clock )
+{
+    vlc_mutex_lock( &cl->lock );
+    if( cl->audio_master == clock )
+        cl->audio_master = NULL;
+    vlc_clock_Delete( clock );
+    vlc_mutex_unlock( &cl->lock );
 }
 
 /*****************************************************************************
@@ -280,6 +329,12 @@ void input_clock_Update( input_clock_t *cl, vlc_object_t *p_log,
         cl->ref = clock_point_Create( i_ck_stream,
                                       __MAX( cl->i_ts_max + CR_MEAN_PTS_GAP, i_ck_system ) );
         cl->b_has_external_clock = false;
+        if( cl->output )
+        {
+            vlc_clock_main_Lock( cl->output );
+            vlc_clock_main_SetFirstPcr( cl->output, cl->ref.i_system, i_ck_stream );
+            vlc_clock_main_Unlock( cl->output );
+        }
     }
 
     /* Compute the drift between the stream clock and the system clock
@@ -339,8 +394,13 @@ void input_clock_Reset( input_clock_t *cl )
     cl->ref = clock_point_Create( VLC_TICK_INVALID, VLC_TICK_INVALID );
     cl->b_has_external_clock = false;
     cl->i_ts_max = VLC_TICK_INVALID;
-    cl->i_system_delay = 0;
 
+    if( cl->output )
+    {
+        vlc_clock_main_Lock( cl->output );
+        vlc_clock_main_Reset( cl->output );
+        vlc_clock_main_Unlock( cl->output );
+    }
     vlc_mutex_unlock( &cl->lock );
 }
 
@@ -383,6 +443,12 @@ void input_clock_ChangePause( input_clock_t *cl, bool b_paused, vlc_tick_t i_dat
     cl->i_pause_date = i_date;
     cl->b_paused = b_paused;
 
+    if( cl->output )
+    {
+        vlc_clock_main_Lock( cl->output );
+        vlc_clock_main_ChangePause( cl->output, i_date, b_paused );
+        vlc_clock_main_Unlock( cl->output );
+    }
     vlc_mutex_unlock( &cl->lock );
 }
 
@@ -430,8 +496,7 @@ int input_clock_ConvertTS( vlc_object_t *p_object, input_clock_t *cl,
 
     /* */
     const vlc_tick_t i_ts_buffering = cl->i_buffering_duration * cl->i_rate / INPUT_RATE_DEFAULT;
-    const vlc_tick_t i_ts_delay = cl->i_pts_delay + cl->i_system_delay
-                                + ClockGetTsOffset( cl );
+    const vlc_tick_t i_ts_delay = cl->i_pts_delay + ClockGetTsOffset( cl );
 
     /* */
     if( *pi_ts0 > VLC_TICK_INVALID )
@@ -524,20 +589,16 @@ void input_clock_ChangeSystemOrigin( input_clock_t *cl, bool b_absolute, vlc_tic
     cl->ref.i_system += i_offset;
     cl->last.i_system += i_offset;
 
+    if( cl->output && b_absolute )
+    {
+        vlc_clock_main_Lock( cl->output );
+        vlc_clock_main_SetFirstPcr( cl->output,
+            cl->ref.i_system + ClockGetTsOffset( cl ), cl->ref.i_stream );
+        vlc_clock_main_Unlock( cl->output );
+    }
     vlc_mutex_unlock( &cl->lock );
 }
 
-void input_clock_AddSystemDelay( input_clock_t *cl, vlc_tick_t i_delay )
-{
-    assert( i_delay >= 0 );
-    if( i_delay == 0 )
-        return;
-
-    vlc_mutex_lock( &cl->lock );
-    if( cl->b_has_reference )
-        cl->i_system_delay += i_delay;
-    vlc_mutex_unlock( &cl->lock );
-}
 
 void input_clock_GetSystemOrigin( input_clock_t *cl, vlc_tick_t *pi_system, vlc_tick_t *pi_delay )
 {
@@ -582,6 +643,12 @@ void input_clock_SetJitter( input_clock_t *cl,
     if( cl->i_pts_delay < i_pts_delay )
         cl->i_pts_delay = i_pts_delay;
 
+    if( cl->output )
+    {
+        vlc_clock_main_Lock( cl->output );
+        vlc_clock_main_SetInputDejitter( cl->output, cl->i_pts_delay );
+        vlc_clock_main_Unlock( cl->output );
+    }
     /* */
     if( i_cr_average < 10 )
         i_cr_average = 10;

@@ -198,6 +198,7 @@ static inline void TraceRender(struct vlc_tracer *tracer, const char *type,
                                const char *id, vlc_tick_t now, vlc_tick_t pts,
                                vlc_tick_t drift, uint32_t clock_id)
 {
+    (void)tracer; (void)type; (void)id; (void)pts; (void)drift; (void)clock_id;
     if (now != VLC_TICK_MAX && now != VLC_TICK_INVALID)
     {
         vlc_tracer_TraceWithTs(tracer, vlc_tick_now(),

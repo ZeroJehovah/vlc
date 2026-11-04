@@ -23,6 +23,20 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <errno.h>
+
+/* reallocarray is unavailable at Android API 21. */
+static inline void *vlc_vector_reallocarray_(void *ptr, size_t count, size_t size)
+{
+    if (size != 0 && count > SIZE_MAX / size)
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
+    return realloc(ptr, count * size);
+}
 
 /**
  * \defgroup vector Vector
@@ -168,7 +182,7 @@ static inline void *
 vlc_vector_reallocdata_(void *ptr, size_t count, size_t size,
                         size_t *restrict pcap, size_t *restrict psize)
 {
-    void *n = reallocarray(ptr, count, size);
+    void *n = vlc_vector_reallocarray_(ptr, count, size);
     if (!n)
     {
         /* this vector implementation guarantees that the capacity may not

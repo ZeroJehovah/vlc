@@ -10,5 +10,6 @@ mkdir -p "$output"
     -ffunction-sections -fdata-sections -fsanitize=address,undefined \
     "$test_dir/test-output-clock.c" \
     "$task_core/src/clock/clock.c" "$task_core/src/clock/clock_internal.c" \
+    "$task_core/src/input/clock.c" "$task_core/src/audio_output/timing.c" \
     -Wl,--gc-sections -lm -lpthread -o "$output/test-output-clock"
 ASAN_OPTIONS=detect_leaks=1 "$output/test-output-clock"

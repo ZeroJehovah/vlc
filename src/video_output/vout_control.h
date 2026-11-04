@@ -24,6 +24,11 @@
 
 #ifndef LIBVLC_VOUT_CONTROL_H
 #define LIBVLC_VOUT_CONTROL_H 1
+#include <vlc_clock.h>
+
+/* Borrowed from decoder; synchronous detach precedes decoder destruction. */
+void vout_SetClock(vout_thread_t *, vlc_clock_t *);
+void vout_SetClockRate(vout_thread_t *, double);
 
 typedef struct vout_window_mouse_event_t vout_window_mouse_event_t;
 

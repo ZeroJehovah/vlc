@@ -258,6 +258,8 @@ static vout_thread_t *RequestVout( input_resource_t *p_resource,
     else
     {
         assert( p_vout );
+        /* A recycled vout outlives its decoder and input program clock. */
+        vout_SetClock( p_vout, NULL );
 
         vlc_mutex_lock( &p_resource->lock_hold );
         TAB_REMOVE( p_resource->i_vout, p_resource->pp_vout, p_vout );
