@@ -110,6 +110,9 @@ error:
     owner->sync.end = VLC_TICK_INVALID;
     owner->sync.resamp_type = AOUT_RESAMPLING_NONE;
     owner->sync.discontinuity = true;
+    owner->sync.resume_recovery = false;
+    owner->sync.resume_stable_samples = 0;
+    owner->sync.resume_date = VLC_TICK_INVALID;
     msg_Info (p_aout, "[pause-diag] audio_stream now_us=%"PRId64
               " input_rate=%u output_rate=%u channels=%u",
               mdate (), owner->input_format.i_rate, owner->mixer_format.i_rate,
@@ -176,6 +179,9 @@ static int aout_CheckReady (audio_output_t *aout)
         msg_Dbg (aout, "restarting filters...");
         owner->sync.end = VLC_TICK_INVALID;
         owner->sync.resamp_type = AOUT_RESAMPLING_NONE;
+        owner->sync.resume_recovery = false;
+        owner->sync.resume_stable_samples = 0;
+        owner->sync.resume_date = VLC_TICK_INVALID;
 
         if (owner->mixer_format.i_format)
         {
@@ -248,6 +254,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
 {
     aout_owner_t *owner = aout_owner (aout);
     vlc_tick_t drift;
+    const bool resume_recovery = owner->sync.resume_recovery;
 
     /**
      * Depending on the drift between the actual and intended playback times,
@@ -269,6 +276,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                                  ? mdate () : VLC_TICK_INVALID;
     if (aout_OutputTimeGet (aout, &drift) != 0)
     {
+        owner->sync.resume_stable_samples = 0;
         if (owner->pause_diag.log_buffer)
             msg_Info (aout, "[pause-diag] audio_timing cycle=%u status=unknown"
                       " pts_us=%"PRId64" query_us=%"PRId64,
@@ -281,10 +289,11 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         msg_Info (aout, "[pause-diag] audio_timing cycle=%u status=ok"
                   " now_us=%"PRId64" pts_us=%"PRId64" delay_us=%"PRId64
                   " drift_us=%"PRId64" discontinuity=%d rate=%d resampling=%d"
-                  " query_us=%"PRId64,
+                  " query_us=%"PRId64" resume_recovery=%d",
                   owner->pause_diag.cycle, sync_now, dec_pts, output_delay,
                   drift, owner->sync.discontinuity, input_rate,
-                  owner->sync.resamp_type, sync_now - query_begin);
+                  owner->sync.resamp_type, sync_now - query_begin,
+                  resume_recovery);
 
     /* Late audio output.
      * This can happen due to insufficient caching, scheduling jitter
@@ -295,29 +304,39 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     if (drift > (owner->sync.discontinuity ? 0
                   : +3 * input_rate * AOUT_MAX_PTS_DELAY / INPUT_RATE_DEFAULT))
     {
-        if (!owner->sync.discontinuity)
-            msg_Warn (aout, "playback way too late (%"PRId64"): "
-                      "flushing buffers", drift);
-        else
-            msg_Dbg (aout, "playback too late (%"PRId64"): "
-                     "flushing buffers", drift);
-        if (vlc_pause_diag_Event (&owner->pause_diag))
-            msg_Info (aout, "[pause-diag] action=flush_late cycle=%u"
+        if (resume_recovery)
+        {
+            msg_Warn (aout, "[pause-diag] action=defer_flush_resume cycle=%u"
                       " drift_us=%"PRId64" pts_us=%"PRId64,
                       owner->pause_diag.cycle, drift, dec_pts);
-        aout_OutputFlush (aout, false);
+        }
+        else
+        {
+            if (!owner->sync.discontinuity)
+                msg_Warn (aout, "playback way too late (%"PRId64"): "
+                          "flushing buffers", drift);
+            else
+                msg_Dbg (aout, "playback too late (%"PRId64"): "
+                         "flushing buffers", drift);
+            if (vlc_pause_diag_Event (&owner->pause_diag))
+                msg_Info (aout, "[pause-diag] action=flush_late cycle=%u"
+                          " drift_us=%"PRId64" pts_us=%"PRId64,
+                          owner->pause_diag.cycle, drift, dec_pts);
+            aout_OutputFlush (aout, false);
 
-        aout_StopResampling (aout);
-        owner->sync.end = VLC_TICK_INVALID;
-        owner->sync.discontinuity = true;
+            aout_StopResampling (aout);
+            owner->sync.end = VLC_TICK_INVALID;
+            owner->sync.discontinuity = true;
 
-        /* Now the output might be too early... Recheck. */
-        if (aout_OutputTimeGet (aout, &drift) != 0)
-            return; /* nothing can be done if timing is unknown */
-        drift += mdate () - dec_pts;
-        if (owner->pause_diag.log_buffer)
-            msg_Info (aout, "[pause-diag] audio_timing_after_flush cycle=%u"
-                      " drift_us=%"PRId64, owner->pause_diag.cycle, drift);
+            /* Now the output might be too early... Recheck. */
+            if (aout_OutputTimeGet (aout, &drift) != 0)
+                return; /* nothing can be done if timing is unknown */
+            drift += mdate () - dec_pts;
+            if (owner->pause_diag.log_buffer)
+                msg_Info (aout, "[pause-diag] audio_timing_after_flush"
+                          " cycle=%u drift_us=%"PRId64,
+                          owner->pause_diag.cycle, drift);
+        }
     }
 
     /* Early audio output.
@@ -325,14 +344,44 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     if (drift < (owner->sync.discontinuity ? 0
                 : -3 * input_rate * AOUT_MAX_PTS_ADVANCE / INPUT_RATE_DEFAULT))
     {
-        if (!owner->sync.discontinuity)
-            msg_Warn (aout, "playback way too early (%"PRId64"): "
-                      "playing silence", drift);
-        aout_DecSilence (aout, -drift, dec_pts);
+        if (resume_recovery)
+        {
+            msg_Warn (aout, "[pause-diag] action=defer_silence_resume cycle=%u"
+                      " drift_us=%"PRId64" pts_us=%"PRId64,
+                      owner->pause_diag.cycle, drift, dec_pts);
+        }
+        else
+        {
+            if (!owner->sync.discontinuity)
+                msg_Warn (aout, "playback way too early (%"PRId64"): "
+                          "playing silence", drift);
+            aout_DecSilence (aout, -drift, dec_pts);
 
-        aout_StopResampling (aout);
-        owner->sync.discontinuity = true;
-        drift = 0;
+            aout_StopResampling (aout);
+            owner->sync.discontinuity = true;
+            drift = 0;
+        }
+    }
+
+    if (resume_recovery)
+    {
+        const bool stable = drift <= AOUT_MAX_PTS_DELAY
+                         && drift >= -AOUT_MAX_PTS_ADVANCE;
+        if (stable)
+            owner->sync.resume_stable_samples++;
+        else
+            owner->sync.resume_stable_samples = 0;
+
+        const vlc_tick_t now = mdate ();
+        if (owner->sync.resume_stable_samples >= 4
+         && now - owner->sync.resume_date >= AOUT_MAX_PREPARE_TIME)
+        {
+            owner->sync.resume_recovery = false;
+            msg_Info (aout, "[pause-diag] action=resume_recovery_end cycle=%u"
+                      " elapsed_us=%"PRId64" drift_us=%"PRId64,
+                      owner->pause_diag.cycle, now - owner->sync.resume_date,
+                      drift);
+        }
     }
 
     if (!aout_FiltersCanResample(owner->filters))
@@ -508,6 +557,10 @@ void aout_DecChangePause (audio_output_t *aout, bool paused, vlc_tick_t date)
     const vlc_tick_t backend_begin = mdate ();
     if (owner->mixer_format.i_format)
         aout_OutputPause (aout, paused, date);
+
+    owner->sync.resume_recovery = !paused;
+    owner->sync.resume_stable_samples = 0;
+    owner->sync.resume_date = paused ? VLC_TICK_INVALID : begin;
     const vlc_tick_t end = mdate ();
     msg_Info (aout, "[pause-diag] audio_pause_end cycle=%u paused=%d"
               " now_us=%"PRId64" backend_begin_us=%"PRId64
@@ -527,6 +580,9 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
               " wait=%d end_us=%"PRId64, owner->pause_diag.cycle,
               mdate (), wait, owner->sync.end);
     owner->sync.end = VLC_TICK_INVALID;
+    owner->sync.resume_recovery = false;
+    owner->sync.resume_stable_samples = 0;
+    owner->sync.resume_date = VLC_TICK_INVALID;
     if (owner->mixer_format.i_format)
     {
         if (wait)

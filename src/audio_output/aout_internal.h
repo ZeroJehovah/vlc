@@ -152,6 +152,9 @@ typedef struct
         unsigned resamp_start_drift; /**< Resampler drift absolute value */
         int resamp_type; /**< Resampler mode (FIXME: redundant / resampling) */
         bool discontinuity;
+        bool resume_recovery; /**< Avoid destructive correction after resume */
+        unsigned resume_stable_samples;
+        vlc_tick_t resume_date;
     } sync;
 
     vlc_pause_diag_t pause_diag;
