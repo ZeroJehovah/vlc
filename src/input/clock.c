@@ -329,12 +329,6 @@ void input_clock_Update( input_clock_t *cl, vlc_object_t *p_log,
         cl->ref = clock_point_Create( i_ck_stream,
                                       __MAX( cl->i_ts_max + CR_MEAN_PTS_GAP, i_ck_system ) );
         cl->b_has_external_clock = false;
-        if( cl->output )
-        {
-            vlc_clock_main_Lock( cl->output );
-            vlc_clock_main_SetFirstPcr( cl->output, cl->ref.i_system, i_ck_stream );
-            vlc_clock_main_Unlock( cl->output );
-        }
     }
 
     /* Compute the drift between the stream clock and the system clock
@@ -395,12 +389,8 @@ void input_clock_Reset( input_clock_t *cl )
     cl->b_has_external_clock = false;
     cl->i_ts_max = VLC_TICK_INVALID;
 
-    if( cl->output )
-    {
-        vlc_clock_main_Lock( cl->output );
-        vlc_clock_main_Reset( cl->output );
-        vlc_clock_main_Unlock( cl->output );
-    }
+    /* Output flush is asynchronous. Keep its old reference until the
+     * end-of-buffering origin update, as VLC 4 EsOutDecodersStopBuffering does. */
     vlc_mutex_unlock( &cl->lock );
 }
 
@@ -592,6 +582,10 @@ void input_clock_ChangeSystemOrigin( input_clock_t *cl, bool b_absolute, vlc_tic
     if( cl->output && b_absolute )
     {
         vlc_clock_main_Lock( cl->output );
+        /* Discard points only after all decoders have acknowledged buffering.
+         * Reset before SetFirstPcr also prevents initial preroll from creating
+         * an old context that new audio could accidentally keep following. */
+        vlc_clock_main_Reset( cl->output );
         vlc_clock_main_SetFirstPcr( cl->output,
             cl->ref.i_system + ClockGetTsOffset( cl ), cl->ref.i_stream );
         vlc_clock_main_Unlock( cl->output );

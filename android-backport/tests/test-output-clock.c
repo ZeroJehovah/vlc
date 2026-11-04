@@ -40,12 +40,17 @@ static void test_audio_feedback(void)
     assert(input && input_clock_EnableOutput(input) == VLC_SUCCESS);
     bool late, master;
     input_clock_SetJitter(input, 300000, 10);
-    input_clock_Update(input, NULL, &late, true, false, 10000000, test_now);
-    input_clock_ChangeSystemOrigin(input, true, test_now);
     vlc_clock_t *a = input_clock_CreateOutput(input, AUDIO_ES, &master);
     assert(a && master);
     vlc_clock_t *v = input_clock_CreateOutput(input, VIDEO_ES, &master);
     assert(v && !master);
+    /* Outputs exist before buffering completes; preroll may display a frame. */
+    vlc_clock_Lock(v);
+    vlc_clock_UpdateVideo(v, INT64_MAX, 10000000, 1., 25, 1);
+    vlc_clock_Unlock(v);
+    input_clock_Update(input, NULL, &late, true, false, 10000000, test_now);
+    input_clock_ChangeSystemOrigin(input, true, test_now);
+    assert(convert(v, 10000000, 1.) == 100300000);
     aout_timing_t t;
     aout_TimingInit(&t);
     t.clock = a;
@@ -84,6 +89,7 @@ static void test_audio_feedback(void)
     t.paused = true;
     test_now = 110000000;
     input_clock_Reset(input);
+    assert(convert(v, 15000000, 2.) == 108300000);
     aout_TimingReset(&t, 48000);
     assert(t.paused && t.samples == 0);
     input_clock_Update(input, NULL, &late, true, false, 30000000, test_now);

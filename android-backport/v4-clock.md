@@ -35,7 +35,10 @@ remain system dates. Snapshots are taken before converting the display date.
 A cloned picture header supplies the system date expected by Android without
 corrupting the media date of the retained picture. A recycled vout synchronously
 detaches its borrowed decoder clock before that clock is freed. Flush resets
-sample mappings and retains paused state. Video waits are interruptible by
+sample mappings and retains paused state. Input reset preserves the output
+reference until all decoders have acknowledged buffering, then resets the main
+clock before setting the first PCR, matching VLC 4's reset ordering.
+Video waits are interruptible by
 stop/seek/control requests.
 
 Validation of imported algorithm: `sh android-backport/tests/test-output-clock.sh`
@@ -46,7 +49,7 @@ adapter, exercising stale/invalid reports and rate changes with queued PCM.
 The AudioTrack JNI harness checks retained-queue wakeup, write-lock separation,
 partial-write stop, timestamp dates, raw-head fallback and 32-bit counter wrap.
 These tests do not establish audible sync, subtitle appearance or snapshot
-success on a real Android device. Blueto​oth route changes, multiple concurrent
+success on a real Android device. Bluetooth route changes, multiple concurrent
 audio outputs, DVD menus and long-running playback still need device coverage.
 
 Expected diagnostic markers:
