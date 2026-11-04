@@ -95,6 +95,15 @@ void    input_clock_GetSystemOrigin( input_clock_t *, vlc_tick_t *pi_system, vlc
 void    input_clock_ChangeSystemOrigin( input_clock_t *, bool b_absolute, vlc_tick_t i_system );
 
 /**
+ * This function delays the stream-to-system mapping by i_delay.
+ *
+ * It is used after an output resumes late: future audio and video timestamps
+ * are moved together so the video clock waits for the audio output without
+ * flushing or skipping already queued samples.
+ */
+void    input_clock_AddSystemDelay( input_clock_t *, vlc_tick_t i_delay );
+
+/**
  * This function converts a pair of timestamp from stream clock to system clock.
  *
  * If pi_rate is provided it will be filled with the rate value used for

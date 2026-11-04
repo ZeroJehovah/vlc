@@ -69,6 +69,10 @@ static void Reset(aout_instance_t *instance, bool recovering)
     instance->owner.sync.resume_recovery = recovering;
     instance->owner.sync.resume_date = fake_now;
     instance->owner.sync.resume_stable_samples = 0;
+    instance->owner.sync.resume_clock_candidate = VLC_TICK_INVALID;
+    instance->owner.sync.resume_clock_samples = 0;
+    instance->owner.sync.resume_clock_corrections = 0;
+    instance->owner.sync.resume_clock_date = VLC_TICK_INVALID;
     instance->owner.sync.discontinuity = false;
     instance->owner.sync.resamp_type = AOUT_RESAMPLING_NONE;
     instance->owner.mixer_format.i_format = VLC_CODEC_S16N;
@@ -85,23 +89,51 @@ int main(void)
     /* Both real phone anomalies must use the non-destructive recovery path. */
     fake_delay = 2 * CLOCK_FREQ;
     Reset(&instance, true);
+    vlc_tick_t clock_delay = 0;
     vlc_tick_t pts = fake_now + fake_delay - CLOCK_FREQ * 316 / 1000;
-    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT);
+    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT, &clock_delay);
     assert(flush_count == 0);
+    assert(clock_delay == 0);
 
     fake_delay = 0;
     Reset(&instance, true);
     pts = fake_now + CLOCK_FREQ * 17 / 10;
-    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT);
+    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT, &clock_delay);
     assert(play_count == 0);
+    assert(clock_delay == 0);
 
     /* Outside recovery, the legacy destructive correction remains intact. */
     fake_delay = 2 * CLOCK_FREQ;
     Reset(&instance, false);
     pts = fake_now + fake_delay - CLOCK_FREQ * 316 / 1000;
-    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT);
+    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT, &clock_delay);
     assert(flush_count == 1);
+    assert(clock_delay == 0);
 
-    puts("PASS: resume recovery defers late flush and early silence; normal correction remains");
+    /* A stable, large positive drift delays the shared clock once. */
+    fake_delay = 2 * CLOCK_FREQ;
+    Reset(&instance, true);
+    fake_now += VLC_TICK_FROM_MS(600);
+    instance.owner.sync.resume_date = fake_now - VLC_TICK_FROM_MS(600);
+    clock_delay = 0;
+    pts = fake_now + fake_delay - VLC_TICK_FROM_MS(300);
+    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT, &clock_delay);
+    assert(clock_delay == 0);
+
+    fake_now += VLC_TICK_FROM_MS(100);
+    pts = fake_now + fake_delay - VLC_TICK_FROM_MS(320);
+    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT, &clock_delay);
+    assert(clock_delay == VLC_TICK_FROM_MS(320));
+    assert(instance.owner.sync.resume_clock_corrections == 1);
+
+    /* Corrections are rate-limited during the same resume window. */
+    fake_now += VLC_TICK_FROM_MS(100);
+    pts = fake_now + fake_delay - VLC_TICK_FROM_MS(320);
+    clock_delay = 0;
+    aout_DecSynchronize(aout, pts, INPUT_RATE_DEFAULT, &clock_delay);
+    assert(clock_delay == 0);
+    assert(instance.owner.sync.resume_clock_corrections == 1);
+
+    puts("PASS: resume recovery preserves queued audio and shifts the shared clock once for a stable drift");
     return 0;
 }

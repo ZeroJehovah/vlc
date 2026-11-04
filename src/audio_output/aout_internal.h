@@ -155,6 +155,10 @@ typedef struct
         bool resume_recovery; /**< Avoid destructive correction after resume */
         unsigned resume_stable_samples;
         vlc_tick_t resume_date;
+        vlc_tick_t resume_clock_candidate;
+        unsigned resume_clock_samples;
+        unsigned resume_clock_corrections;
+        vlc_tick_t resume_clock_date;
     } sync;
 
     vlc_pause_diag_t pause_diag;
@@ -229,7 +233,8 @@ bool aout_ChangeFilterString( vlc_object_t *manager, vlc_object_t *aout,
 int aout_DecNew(audio_output_t *, const audio_sample_format_t *,
                 const audio_replay_gain_t *, const aout_request_vout_t *);
 void aout_DecDelete(audio_output_t *);
-int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate);
+int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate,
+                 vlc_tick_t *pi_clock_delay);
 void aout_DecGetResetStats(audio_output_t *, unsigned *, unsigned *);
 void aout_DecChangePause(audio_output_t *, bool b_paused, vlc_tick_t i_date);
 void aout_DecFlush(audio_output_t *, bool wait);
