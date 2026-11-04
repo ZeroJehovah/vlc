@@ -1867,6 +1867,14 @@ AudioTrack_Thread( void *p_data )
                 p_sys->i_samples_inflight = 0;
             }
 
+            /* Stop() and JNI failures must terminate even when a partially
+             * written staging chunk is still present. */
+            if( !p_sys->b_thread_running || p_sys->b_error )
+            {
+                vlc_mutex_unlock( &p_sys->lock );
+                break;
+            }
+
             if( i_play_deadline != 0 && mdate() < i_play_deadline )
             {
                 /* Don't wake up the thread when there is new data since we are

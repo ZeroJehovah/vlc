@@ -9,6 +9,7 @@ static pthread_mutex_t test_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t test_cond = PTHREAD_COND_INITIALIZER;
 static bool write_entered, release_write, play_started, play_done;
 static int play_method, pause_method, write_method, head_method;
+static jsize write_divisor = 1;
 
 vlc_tick_t mdate(void)
 {
@@ -73,7 +74,7 @@ static jint MockCallInt(JNIEnv *env, jobject obj, jmethodID method, ...)
     while (!release_write)
         pthread_cond_wait(&test_cond, &test_lock);
     pthread_mutex_unlock(&test_lock);
-    return size;
+    return size / write_divisor;
 }
 static const struct JNINativeInterface_ jni = {
     .ExceptionCheck = MockExceptionCheck,
@@ -182,12 +183,61 @@ int main(void)
     free(sys.staging.p_data);
     vlc_mutex_destroy(&sys.write_lock);
     puts("PASS: producer keeps enqueueing while vendor AudioTrack.write is stalled");
-#else
-    assert(!decoupled);
-    puts("PASS: old writer lock blocks the producer for the full vendor write");
-#endif
+
+    /* A partial write followed by Stop() must not leave the writer spinning on
+     * a non-empty staging chunk. */
     vlc_cond_destroy(&sys.aout_cond);
     vlc_cond_destroy(&sys.thread_cond);
     vlc_mutex_destroy(&sys.lock);
+    memset(&sys, 0, sizeof(sys));
+    pthread_mutex_lock(&test_lock);
+    write_entered = release_write = play_started = play_done = false;
+    write_divisor = 2;
+    pthread_mutex_unlock(&test_lock);
+    sys.fmt.i_rate = 48000;
+    sys.fmt.i_bytes_per_frame = 4;
+    sys.fmt.i_frame_length = 1;
+    sys.i_write_type = WRITE_BYTEARRAYV23;
+    sys.i_max_audiotrack_samples = 38400;
+    sys.circular.i_size = 192000;
+    sys.b_thread_running = true;
+    sys.staging.p_data = calloc(1, sys.circular.i_size);
+    assert(sys.staging.p_data);
+    sys.staging.i_size = sys.circular.i_size;
+    vlc_mutex_init(&sys.lock);
+    vlc_mutex_init(&sys.write_lock);
+    vlc_cond_init(&sys.thread_cond);
+    vlc_cond_init(&sys.aout_cond);
+
+    assert(pthread_create(&writer, NULL, AudioTrack_Thread, &aout) == 0);
+    Play(&aout, &first);
+    assert(WaitFor(&write_entered));
+    vlc_mutex_lock(&sys.lock);
+    sys.b_thread_running = false;
+    vlc_cond_signal(&sys.thread_cond);
+    vlc_mutex_unlock(&sys.lock);
+    pthread_mutex_lock(&test_lock);
+    release_write = true;
+    pthread_cond_broadcast(&test_cond);
+    pthread_mutex_unlock(&test_lock);
+
+    struct timespec join_deadline;
+    clock_gettime(CLOCK_REALTIME, &join_deadline);
+    join_deadline.tv_sec += 1;
+    assert(pthread_timedjoin_np(writer, NULL, &join_deadline) == 0);
+    assert(sys.staging.i_length != 0);
+    free(sys.staging.p_data);
+    vlc_mutex_destroy(&sys.write_lock);
+    vlc_cond_destroy(&sys.aout_cond);
+    vlc_cond_destroy(&sys.thread_cond);
+    vlc_mutex_destroy(&sys.lock);
+    puts("PASS: Stop exits with a partially written staging chunk");
+#else
+    assert(!decoupled);
+    puts("PASS: old writer lock blocks the producer for the full vendor write");
+    vlc_cond_destroy(&sys.aout_cond);
+    vlc_cond_destroy(&sys.thread_cond);
+    vlc_mutex_destroy(&sys.lock);
+#endif
     return 0;
 }
