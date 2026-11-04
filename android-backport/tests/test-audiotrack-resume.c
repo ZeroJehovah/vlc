@@ -11,7 +11,7 @@ static pthread_cond_t test_cond = PTHREAD_COND_INITIALIZER;
 static bool waiting, wrote;
 static size_t bytes_written;
 static aout_sys_t *active;
-static int play_method, pause_method, write_method;
+static int play_method, pause_method, write_method, head_method;
 
 vlc_tick_t mdate(void)
 {
@@ -56,6 +56,8 @@ static void MockCallVoid(JNIEnv *env, jobject obj, jmethodID method, ...)
 static jint MockCallInt(JNIEnv *env, jobject obj, jmethodID method, ...)
 {
     (void)env; (void)obj;
+    if (method == (jmethodID)&head_method)
+        return 0; /* Fake sink starts at playback position zero. */
     assert(method == (jmethodID)&write_method);
     va_list ap;
     va_start(ap, method);
@@ -102,6 +104,7 @@ int main(int argc, char **argv)
     jfields.AudioTrack.play = (jmethodID)&play_method;
     jfields.AudioTrack.pause = (jmethodID)&pause_method;
     jfields.AudioTrack.writeV23 = (jmethodID)&write_method;
+    jfields.AudioTrack.getPlaybackHeadPosition = (jmethodID)&head_method;
     for (unsigned round = 0; round < (old ? 1u : 20u); round++) {
         aout_sys_t sys = {0};
         audio_output_t aout = {.sys = &sys};
@@ -112,6 +115,7 @@ int main(int argc, char **argv)
         sys.fmt.i_bytes_per_frame = 4;
         sys.fmt.i_frame_length = 1;
         sys.i_write_type = WRITE_BYTEARRAYV23;
+        sys.i_max_audiotrack_samples = 38400;
         sys.circular.i_size = 38400;
         sys.circular.i_write = 38400; /* 200 ms already queued before pause */
         sys.b_thread_running = true;

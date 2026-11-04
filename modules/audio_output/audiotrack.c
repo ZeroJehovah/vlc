@@ -1582,9 +1582,37 @@ AudioTrack_PlayByteArrayV23( JNIEnv *env, audio_output_t *p_aout,
 {
     aout_sys_t *p_sys = p_aout->sys;
 
-    return JNI_AT_CALL_INT( writeV23, p_sys->circular.u.p_bytearray,
-                            i_data_offset, i_data_size,
-                            jfields.AudioTrack.WRITE_NON_BLOCKING );
+    /* WRITE_NON_BLOCKING is still allowed to make a short progress call, and
+     * some vendor AudioTrack implementations block during route restoration.
+     * Keep the old position check so the writer never enters Java with a full
+     * internal buffer. */
+    const uint64_t i_audiotrack_pos =
+        AudioTrack_getPlaybackHeadPosition( env, p_aout );
+    if( i_audiotrack_pos > p_sys->i_samples_written )
+    {
+        msg_Warn( p_aout, "audiotrack position is ahead after resume" );
+        return 0;
+    }
+    const uint64_t i_samples_pending =
+        p_sys->i_samples_written - i_audiotrack_pos;
+    if( i_samples_pending >= p_sys->i_max_audiotrack_samples )
+        return 0;
+
+    const uint64_t i_samples = __MIN(
+        p_sys->i_max_audiotrack_samples - i_samples_pending,
+        BYTES_TO_FRAMES( i_data_size ) );
+    i_data_size = FRAMES_TO_BYTES( i_samples );
+
+    const vlc_tick_t begin = mdate();
+    const int i_ret = JNI_AT_CALL_INT( writeV23, p_sys->circular.u.p_bytearray,
+                                       i_data_offset, i_data_size,
+                                       jfields.AudioTrack.WRITE_NON_BLOCKING );
+    const vlc_tick_t elapsed = mdate() - begin;
+    if( elapsed > CLOCK_FREQ / 20 )
+        msg_Warn( p_aout, "[pause-fix] nonblocking_write blocked_us=%"PRId64
+                  " pending_us=%"PRId64" written_frames=%"PRIu64,
+                  elapsed, FRAMES_TO_US( i_samples_pending ), i_samples );
+    return i_ret;
 }
 
 /**
