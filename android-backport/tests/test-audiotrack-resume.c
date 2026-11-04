@@ -172,6 +172,17 @@ int main(int argc, char **argv)
             vlc_mutex_unlock(&sys.lock);
             assert(WaitFlag(&wrote));
         } else assert(progressed);
+#ifdef EXPECT_V23_BUFFER_GUARD
+        for (unsigned i = 0; i < 1000; i++) {
+            vlc_mutex_lock(&sys.lock);
+            bool complete = sys.i_samples_inflight == 0
+                         && sys.i_samples_written == 9600;
+            vlc_mutex_unlock(&sys.lock);
+            if (complete)
+                break;
+            usleep(1000);
+        }
+#endif
         vlc_mutex_lock(&sys.lock);
         assert(sys.circular.i_read == sys.circular.i_write);
         assert(sys.i_samples_written == 9600);
