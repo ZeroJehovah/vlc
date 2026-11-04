@@ -8,8 +8,9 @@
 2. 有界的暂停恢复诊断日志，以及 Android 应用日志服务和导出修复。
 3. AudioTrack 恢复时唤醒音频发送线程，避免队列已有声音却等下一批解码数据才继续发送。添加两条诊断，记录恢复唤醒和首次发送之间的耗时。
 4. AudioTrack 在厂商实现中可能于蓝牙路由恢复时让“非阻塞”写入阻塞约 384ms。新版在进入 Java 写入前检查内部缓冲的已播放位置，满缓冲时不调用写入，并在单次调用超过 50ms 时记录耗时。
+5. 暂停恢复后的短窗口内，播放头估时暂时失真时不再按单次读数清空音频或补入静音，而由已有重采样器逐步收敛；连续稳定后恢复 VLC 3 原有同步规则。显式 flush、seek 和输出重启会退出恢复状态。
 
-第 3、4 项已由两次实际手机日志推动实施，修复版 2 尚未在用户手机上验证。未移植 VLC 4 的整体时钟架构；没有修改音画同步阈值，也没有跳过正常同步修正。证据和限制见 [诊断说明](diagnosis.md)。
+第 3、4 项已由实际手机日志推动实施；修复版 2 的真机日志确认写入阻塞消失，但播放头估时瞬态仍触发破坏性纠偏。视频继续而只有声音中断，进一步把问题定位到 VLC 3 的音频同步分支。修复版 3 尚未在用户手机上验证，未移植 VLC 4 的整体时钟架构。证据和限制见 [诊断说明](diagnosis.md)。
 
 ## 仓库内容
 
@@ -85,14 +86,14 @@ sh link-native.sh -B
 cd /home/ubuntu/vlc-aaudio/app-stable
 JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 \
   ../toolchain/gradle-9.3.1/bin/gradle \
-  -I ../build-resume-fix.init.gradle \
+  -I ../build-resume-fix3.init.gradle \
   -Pandroid.aapt2FromMavenOverride=/home/ubuntu/vlc-aaudio/toolchain/host-tools/aapt2 \
   :application:app:assembleRelease --console=plain --max-workers=3
 cd /home/ubuntu/vlc-aaudio
-python3 package-resume-fix2.py
+python3 package-resume-fix3.py
 ```
 
-打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前包：`3.7.2-resume-fix2`、versionCode `13070204`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
+打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前包：`3.7.2-resume-fix3`、versionCode `13070205`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
 
 ## 验证
 
@@ -106,6 +107,6 @@ sh test-logger/run.sh
 
 AudioTrack 测试支持 `VLC_CORE_DIR`、`VLC_NDK_DIR`、`JAVA_HOME`、`TEST_OUTPUT` 和 `CC` 覆盖路径。负对照确认旧源码在队列已有 200ms PCM 时仍会等待后续信号；修复后 20 次均无需新解码数据就能发出完整 PCM，通过 ASan/UBSan。模拟 JNI 的测试无法证明手机厂商音频栈上的卡顿已经解决。
 
-手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。重点观察 `[pause-fix] resume_notify` / `writer_resumed` 以及后续是否仍有 `flush_late` / `insert_silence`。
+手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。重点观察 `defer_flush_resume`、`defer_silence_resume`、`resample_up` / `resample_down`、`resume_recovery_end`，以及恢复窗口之后是否仍有 `flush_late` / `insert_silence`；同时确认声音是否连续，以及是否出现可见的音画不同步。
 
-`releases/resume-fix2.json` 保存当前交付 APK 的 SHA-256、原生库哈希、播放源码提交和校验项目；APK 本身保存在构建工作区 `artifacts/resume-fix2/`。Release 编译、lint、覆盖升级签名身份、实际打包的修复字符串与日志服务声明均已检查；真机结果仍待反馈。
+`releases/resume-fix3.json` 保存当前交付 APK 的 SHA-256、原生库哈希、播放源码提交和校验项目；APK 本身保存在构建工作区 `artifacts/resume-fix3/`。实际 `dec.c` 同步路径的 sanitizer 测试、Release 编译、lint、覆盖升级签名身份、实际打包的三条恢复标记与日志服务声明均已检查；真机结果仍待反馈。
