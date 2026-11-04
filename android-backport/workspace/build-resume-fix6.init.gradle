@@ -1,0 +1,23 @@
+// Stable VLC with VLC 4-style pause timing preservation and no video clock wait.
+gradle.afterProject { p ->
+    if (p == p.rootProject) {
+        p.ext.appId = 'org.videolan.vlc.aaudio'
+        p.ext.versionName = '3.7.2-resume-fix6'
+        p.ext.versionCode = 3070208
+    }
+    if (p.path == ':libvlcjni:libvlc') {
+        p.tasks.matching { it.name.toLowerCase().contains('lint') }.configureEach {
+            dependsOn 'hrtfsCopy', 'luaPlaylistCopy', 'luaMetaCopy', 'luaModuleCopy'
+        }
+    }
+}
+gradle.beforeProject { p ->
+    p.plugins.withId('com.android.application') {
+        p.android.defaultConfig.ndk.abiFilters.add('arm64-v8a')
+    }
+    p.configurations.configureEach {
+        resolutionStrategy.dependencySubstitution {
+            substitute module('org.videolan.android:libvlc-all') using project(':libvlcjni:libvlc')
+        }
+    }
+}

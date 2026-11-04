@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Sign and verify decoupled AudioTrack writes, retaining earlier artifacts."""
+"""Sign and verify a resume-fix release, retaining earlier artifacts."""
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -14,14 +15,19 @@ subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', 'modules', 'src', 'inclu
 core_source_commit = subprocess.check_output(
     ['git', 'log', '-1', '--format=%H', '--', 'modules', 'src', 'include'],
     cwd=core_repo, text=True).strip()
-artifacts = root / 'artifacts/resume-fix5'
+release = os.environ.get('VLC_RELEASE_TAG', 'resume-fix6')
+version_name = '3.7.2-' + release
+version_code = int(os.environ.get('VLC_VERSION_CODE', '13070208'))
+previous_release = os.environ.get('VLC_PREVIOUS_RELEASE', 'resume-fix5')
+artifacts = root / 'artifacts' / release
 artifacts.mkdir(parents=True, exist_ok=True)
-source = root / 'app-stable/application/app/build/outputs/apk/release/VLC-Android-3.7.2-resume-fix5-all.apk'
+source = root / ('app-stable/application/app/build/outputs/apk/release/VLC-Android-' +
+                 version_name + '-all.apk')
 assert source.is_file(), source
 tool = root / 'toolchain'
 sdk = tool / 'android-sdk/build-tools/36.0.0'
-aligned = artifacts / 'VLC-3.7.2-resume-fix5-arm64-v8a-unsigned-aligned.apk'
-apk = artifacts / 'VLC-3.7.2-resume-fix5-arm64-v8a.apk'
+aligned = artifacts / ('VLC-' + version_name + '-arm64-v8a-unsigned-aligned.apk')
+apk = artifacts / ('VLC-' + version_name + '-arm64-v8a.apk')
 qemu = ['/usr/bin/qemu-x86_64', '-L', str(tool / 'x86-root'), '-E',
         'LD_LIBRARY_PATH=' + str(sdk / 'lib64')]
 subprocess.run(qemu + [str(sdk / 'zipalign'), '-P', '16', '-f', '4', str(source), str(aligned)], check=True)
@@ -38,8 +44,8 @@ subprocess.run(qemu + [str(sdk / 'zipalign'), '-c', '-P', '16', '4', str(apk)], 
 badging = subprocess.check_output([str(tool / 'host-tools/aapt2'), 'dump', 'badging', str(apk)], text=True)
 (artifacts / 'apk-badging.txt').write_text(badging)
 assert "package: name='org.videolan.vlc.aaudio'" in badging
-assert "versionCode='13070207'" in badging
-assert "versionName='3.7.2-resume-fix5'" in badging
+assert "versionCode='%d'" % version_code in badging
+assert "versionName='%s'" % version_name in badging
 assert "native-code: 'arm64-v8a'" in badging
 manifest = subprocess.check_output([str(tool / 'host-tools/aapt2'), 'dump', 'xmltree',
                                     str(apk), '--file', 'AndroidManifest.xml'], text=True)
@@ -67,9 +73,9 @@ with zipfile.ZipFile(apk) as package:
                    b'[pause-diag] action=insert_silence', b'[pause-diag] action=flush_late',
                    b'[pause-diag] backend_play', b'3.0.25 Vetinari',
                    b'Android AAudio output (VLC 3 backport)',
-                   b'action=resume_clock_delay', b'action=input_clock_delay'):
+                   b'[pause-fix] timing_shift duration_us='):
         assert marker in core, marker
-    previous = json.loads((root / 'artifacts/resume-fix4/build-info.json').read_text())
+    previous = json.loads((root / 'artifacts' / previous_release / 'build-info.json').read_text())
     assert native['libvlc.so'] != previous['native_sha256']['libvlc.so']
     # Stable codec, medialibrary and C++ runtime payloads stay identical.
     assert native['libmla.so'] == previous['native_sha256']['libmla.so']
@@ -84,8 +90,9 @@ with zipfile.ZipFile(apk) as package:
     assert b'action=defer_silence_resume' in core
     assert b'action=resume_recovery_end' in core
     assert b'[pause-fix] staged_write blocked_us=' in core
-    assert b'action=resume_clock_delay' in core
-    assert b'action=input_clock_delay' in core
+    assert b'[pause-fix] timing_shift duration_us=' in core
+    assert b'action=resume_clock_delay' not in core
+    assert b'action=input_clock_delay' not in core
     dex_files = [package.read(name) for name in package.namelist() if name.endswith('.dex')]
     for marker in (b'Could not start diagnostic foreground service', b'DebugLogSnapshot', b'pause-diagnostics'):
         assert any(marker in dex for dex in dex_files), marker
@@ -93,10 +100,10 @@ with zipfile.ZipFile(apk) as package:
 info = {
     'apk': apk.name, 'bytes': apk.stat().st_size,
     'sha256': hashlib.sha256(apk.read_bytes()).hexdigest(),
-    'package': 'org.videolan.vlc.aaudio', 'version_name': '3.7.2-resume-fix5',
-    'version_code': 13070207, 'abi': 'arm64-v8a', 'core_version': '3.0.25',
+    'package': 'org.videolan.vlc.aaudio', 'version_name': version_name,
+    'version_code': version_code, 'abi': 'arm64-v8a', 'core_version': '3.0.25',
     'native_sha256': native, 'updates_previous_personal_build': True,
-    'purpose': 'Keep vendor AudioTrack writes from blocking audio enqueue and delay the shared A/V clock when resume drift persists',
+    'purpose': 'Preserve AudioTrack timing across pause like VLC 4 without delaying the video clock',
     'diagnostic_window_seconds': 5, 'max_samples_per_resume_per_stage': 32,
     'max_audio_correction_events_per_resume': 48,
     'app_commit': 'e5740f713d995f6c8e7d92e64134abc3a3b6987d',
@@ -114,9 +121,9 @@ info = {
                'normal destructive correction remains active outside resume recovery',
                'vendor write stall cannot hold the AudioTrack producer lock',
                'partial staged AudioTrack write exits cleanly on stop',
-               'stable positive resume drift requests one input-clock delay',
-               'input-clock delay shifts future A/V timestamps and is reset by seek',
-               'clock corrections are bounded and rate-limited',
+               'AudioTrack timestamp and smooth-position caches are shifted by pause duration',
+               'pause timing repair is reset by flush/start',
+               'resume recovery no longer delays the shared video clock',
                'packaged logger service declares dataSync and specialUse', 'logger repair code in DEX'],
     'device_tested': False,
 }

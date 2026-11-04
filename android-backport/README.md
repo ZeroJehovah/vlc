@@ -10,9 +10,10 @@
 4. AudioTrack 在厂商实现中可能于蓝牙路由恢复时让“非阻塞”写入阻塞约 384ms。新版在进入 Java 写入前检查内部缓冲的已播放位置，满缓冲时不调用写入，并在单次调用超过 50ms 时记录耗时。
 5. 暂停恢复后的短窗口内，播放头估时暂时失真时不再按单次读数清空音频或补入静音，而由已有重采样器逐步收敛；连续稳定后恢复 VLC 3 原有同步规则。显式 flush、seek 和输出重启会退出恢复状态。
 6. 将 API 23 `WRITE_BYTEARRAYV23` 的厂商写入从播放器生产锁中解耦：发送线程先把一块 PCM 暂存到私有 staging 区并释放 `p_sys->lock`，再调用可能阻塞的 Java `AudioTrack.write()`；另用 `write_lock` 串行化 pause/play/flush。generation 和 `i_samples_inflight` 负责 flush 失效及时间估算。
-7. 恢复窗口内检测连续、稳定的正漂移；超过 180ms 后按测得偏差把共享输入时钟向后平移，让视频等待已经排队的音频。单次最多平移 1 秒、每个恢复窗口最多两次且间隔至少 500ms；seek/flush 会清除该修正。
+7. 修复版 5 曾尝试在恢复窗口内平移共享输入时钟，让视频等待已经排队的音频。该方案会让画面短暂停顿，已被用户否决；当前修复版 6 已撤掉该运行时行为，不把它作为默认同步策略。
+8. 参考 VLC 4 的暂停恢复时间修正：AudioTrack 的系统时间戳和播放头平滑缓存跨暂停后按暂停时长平移，不再把暂停期间误算成已播放。视频时钟保持原速，不主动等待音频。异常播放头估时会记录发送帧、AudioTrack 帧、环形队列和 staging 帧，便于定位厂商音频栈行为。
 
-第 3–7 项均由实际手机日志推动实施。修复版 2 的真机日志确认先前的满缓冲写入被避开，但播放头估时瞬态仍触发破坏性纠偏。修复版 3 消除了断音，却仍会出现持续音画偏差。修复版 4 解除了厂商写入与生产锁的耦合；真机确认写入锁不再是主要矛盾，但恢复后仍有约 333–953ms 的持续偏差，而且手动 seek 后立即恢复。修复版 5 因此不再继续改 AudioTrack 锁，而是在恢复窗口内平移共享输入时钟，让画面短暂等待音频追平。它尚未经过真机确认，不能宣称问题已经解决。证据和限制见 [诊断说明](diagnosis.md)。
+第 3–8 项均由实际手机日志推动实施。修复版 2 的真机日志确认先前的满缓冲写入被避开，但播放头估时瞬态仍触发破坏性纠偏。修复版 3 消除了断音，却仍会出现持续音画偏差。修复版 4 解除了厂商写入与生产锁的耦合；真机确认写入锁不再是主要矛盾，但恢复后仍有约 333–953ms 的持续偏差，而且手动 seek 后立即恢复。修复版 5 尝试让视频短暂等待音频，但该设计未经过真机确认，且用户明确不接受画面停顿。修复版 6 改为移植 VLC 4 的暂停后时间缓存修正，不主动延迟视频；仍需手机实测。证据和限制见 [诊断说明](diagnosis.md)。
 
 ## 仓库内容
 
@@ -88,14 +89,14 @@ sh link-native.sh -B
 cd /home/ubuntu/vlc-aaudio/app-stable
 JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 \
   ../toolchain/gradle-9.3.1/bin/gradle \
-  -I ../build-resume-fix5.init.gradle \
+  -I ../build-resume-fix6.init.gradle \
   -Pandroid.aapt2FromMavenOverride=/home/ubuntu/vlc-aaudio/toolchain/host-tools/aapt2 \
   :application:app:assembleRelease --console=plain --max-workers=3
 cd /home/ubuntu/vlc-aaudio
 python3 package-resume-fix5.py
 ```
 
-打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前实验包：`3.7.2-resume-fix5`、versionCode `13070207`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
+打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前实验包：`3.7.2-resume-fix6`、versionCode `13070208`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
 
 ## 验证
 
@@ -104,14 +105,13 @@ cd /home/ubuntu/vlc-aaudio/libvlcjni/vlc
 sh android-backport/tests/test-audiotrack-resume.sh
 sh android-backport/tests/test-audiotrack-write-lock.sh
 sh android-backport/tests/test-aout-resume-recovery.sh
-sh android-backport/tests/test-input-clock-delay.sh
 cd /home/ubuntu/vlc-aaudio
 sh test-aaudio.sh
 sh test-logger/run.sh
 ```
 
-AudioTrack 测试支持 `VLC_CORE_DIR`、`VLC_NDK_DIR`、`JAVA_HOME`、`TEST_OUTPUT` 和 `CC` 覆盖路径。恢复测试的负对照确认旧源码在队列已有 200ms PCM 时仍会等待后续信号；修复后 20 次均无需新解码数据就能发出完整 PCM。写入解耦测试让厂商 `write()` 故意阻塞 150ms：修复版 3 会让生产者全程等待，修复版 4 可在阻塞期间继续入队；另验证单次 partial write 后发生 Stop 时，非空 staging 不会令发送线程空转。核心同步决策测试直接调用实际 `aout_DecSynchronize()`；输入时钟测试直接编译实际 `clock.c`，验证延迟只作用于后续时间戳映射、不会被外部时钟更新撤销，并在 reset 时清除。以上测试均通过 ASan/UBSan。模拟 JNI 的测试不能证明手机厂商音频栈上的问题已经解决。
+AudioTrack 测试支持 `VLC_CORE_DIR`、`VLC_NDK_DIR`、`JAVA_HOME`、`TEST_OUTPUT` 和 `CC` 覆盖路径。恢复测试的负对照确认旧源码在队列已有 200ms PCM 时仍会等待后续信号；修复后 20 次均无需新解码数据就能发出完整 PCM，并检查暂停时长会正确平移时间戳和播放头平滑缓存。写入解耦测试让厂商 `write()` 故意阻塞 150ms：修复版 3 会让生产者全程等待，修复版 4 可在阻塞期间继续入队；另验证单次 partial write 后发生 Stop 时，非空 staging 不会令发送线程空转。核心同步决策测试直接调用实际 `aout_DecSynchronize()`，验证恢复窗口不清空/补静音，也不请求延迟共享视频时钟。以上测试均通过 ASan/UBSan。模拟 JNI 的测试不能证明手机厂商音频栈上的问题已经解决。
 
-手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。重点观察 `staged_write blocked_us`、`backend_play call_us`、`defer_flush_resume`、`defer_silence_resume`、`resume_clock_delay`、`input_clock_delay`、`resample_up` / `resample_down`、`resume_recovery_end`，以及恢复窗口之后是否仍有 `flush_late` / `insert_silence`；同时用正脸说话画面确认声音连续且口型没有明显错位。
+手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。重点观察 `timing_shift`、`staged_write blocked_us`、`backend_play call_us`、`defer_flush_resume`、`defer_silence_resume`、`resample_up` / `resample_down`、`resume_recovery_end`，以及恢复窗口之后是否仍有 `flush_late` / `insert_silence`；同时用正脸说话画面确认声音连续、画面不停顿且口型没有明显错位。
 
-`releases/resume-fix4.json` 保留修复版 4 的构建与真机失败记录；`releases/resume-fix5.json` 保存当前实验包的 SHA-256、原生库哈希、播放源码提交和自动校验项目。APK 本身保存在构建工作区 `artifacts/resume-fix5/`。修复版 5 的 Release 编译、lint、覆盖升级签名身份、打包标记、恢复测试、输入时钟测试和写入解耦测试均已通过，但 `device_tested` 为 `false`，必须由手机实测决定下一轮方向。
+`releases/resume-fix4.json` 保留修复版 4 的构建与真机失败记录；`releases/resume-fix5.json` 记录未实测即被用户否决的“画面等待”方案；`releases/resume-fix6.json` 保存当前实验包的 SHA-256、原生库哈希、播放源码提交和自动校验项目。APK 本身保存在构建工作区 `artifacts/resume-fix6/`。修复版 6 的 Release 编译、lint、覆盖升级签名身份、打包标记、恢复测试和写入解耦测试均已通过，但 `device_tested` 为 `false`，必须由手机实测决定下一轮方向。
