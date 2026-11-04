@@ -8,7 +8,7 @@ contrib=$core/contrib/aarch64-linux-android
 modules=$(find "$build/install/lib/vlc/plugins" -name 'lib*plugin.a' -print | tr '\n' ' ')
 libs=$(cd "$contrib/lib/pkgconfig" && PKG_CONFIG_LIBDIR="$contrib/lib/pkgconfig" \
     PKG_CONFIG_PATH="$contrib/lib/pkgconfig" pkg-config --libs $(ls *.pc | sed 's/\.pc$//'))
-"$task_root/toolchain/native-ndk-build.sh" -j4 -C "$jni_root/libvlc" \
+"$task_root/toolchain/native-ndk-build.sh" "$@" -j4 -C "$jni_root/libvlc" \
     APP_STL=c++_shared VLC_SRC_DIR="$core" VLC_BUILD_DIR="$build" \
     VLC_CONTRIB="$contrib" VLC_CONTRIB_LDFLAGS="$libs" \
     VLC_MODULES="$modules" VLC_LDFLAGS='-z max-page-size=16384' VLC_BUILD_JNI=1 \

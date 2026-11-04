@@ -7,8 +7,9 @@
 1. AAudio 输出移植，Android 9 及以上可手动选择；用户实测仅增加 AAudio 没有解决暂停恢复卡顿。
 2. 有界的暂停恢复诊断日志，以及 Android 应用日志服务和导出修复。
 3. AudioTrack 恢复时唤醒音频发送线程，避免队列已有声音却等下一批解码数据才继续发送。添加两条诊断，记录恢复唤醒和首次发送之间的耗时。
+4. AudioTrack 在厂商实现中可能于蓝牙路由恢复时让“非阻塞”写入阻塞约 384ms。新版在进入 Java 写入前检查内部缓冲的已播放位置，满缓冲时不调用写入，并在单次调用超过 50ms 时记录耗时。
 
-第 3 项是根据实际日志和源码实施的窄范围实验修复，尚未在用户手机上验证。未移植 VLC 4 的整体时钟架构；没有修改音画同步阈值，也没有跳过正常同步修正。证据和限制见 [诊断说明](diagnosis.md)。
+第 3、4 项已由两次实际手机日志推动实施，修复版 2 尚未在用户手机上验证。未移植 VLC 4 的整体时钟架构；没有修改音画同步阈值，也没有跳过正常同步修正。证据和限制见 [诊断说明](diagnosis.md)。
 
 ## 仓库内容
 
@@ -88,10 +89,10 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 \
   -Pandroid.aapt2FromMavenOverride=/home/ubuntu/vlc-aaudio/toolchain/host-tools/aapt2 \
   :application:app:assembleRelease --console=plain --max-workers=3
 cd /home/ubuntu/vlc-aaudio
-python3 package-resume-fix.py
+python3 package-resume-fix2.py
 ```
 
-打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。新包：`3.7.2-resume-fix1`、versionCode `13070203`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
+打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前包：`3.7.2-resume-fix2`、versionCode `13070204`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
 
 ## 验证
 
@@ -107,4 +108,4 @@ AudioTrack 测试支持 `VLC_CORE_DIR`、`VLC_NDK_DIR`、`JAVA_HOME`、`TEST_OUT
 
 手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。重点观察 `[pause-fix] resume_notify` / `writer_resumed` 以及后续是否仍有 `flush_late` / `insert_silence`。
 
-`releases/resume-fix1.json` 保存交付 APK 的 SHA-256、原生库哈希、播放源码提交和校验项目；APK 本身保存在构建工作区 `artifacts/resume-fix1/`。Release 编译、lint、覆盖升级签名身份、实际打包的修复字符串与日志服务声明均已检查；真机结果仍待反馈。
+`releases/resume-fix2.json` 保存当前交付 APK 的 SHA-256、原生库哈希、播放源码提交和校验项目；APK 本身保存在构建工作区 `artifacts/resume-fix2/`。Release 编译、lint、覆盖升级签名身份、实际打包的修复字符串与日志服务声明均已检查；真机结果仍待反馈。
