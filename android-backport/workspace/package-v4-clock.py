@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign and verify a resume-fix release, retaining earlier artifacts."""
+"""Sign and verify the shared output-clock experiment, retaining earlier APKs."""
 import hashlib
 import json
 import os
@@ -57,6 +57,15 @@ logger_types = int(logger_declaration.group(1), 16)
 assert logger_types & 0x1, 'Android 10-13 dataSync foreground type missing'
 assert logger_types & 0x40000000, 'Android 14+ specialUse foreground type missing'
 native = {}
+native_build = core_repo / 'build-android-aarch64-linux-android'
+plugin_manifest_path = native_build / 'ndk/static-plugins/manifest.json'
+plugin_manifest = json.loads(plugin_manifest_path.read_text())
+assert 'android_audiotrack' in plugin_manifest
+for name, entry in plugin_manifest.items():
+    original = native_build / entry['source']
+    linked = native_build / 'ndk/static-plugins' / ('lib' + name + '_plugin.a')
+    assert hashlib.sha256(original.read_bytes()).hexdigest() == entry['source_sha256'], name
+    assert hashlib.sha256(linked.read_bytes()).hexdigest() == entry['linked_sha256'], name
 with zipfile.ZipFile(apk) as package:
     libs = [name for name in package.namelist() if name.startswith('lib/') and name.endswith('.so')]
     assert libs and all(name.startswith('lib/arm64-v8a/') for name in libs)
@@ -77,7 +86,7 @@ with zipfile.ZipFile(apk) as package:
         assert marker in core, marker
     previous = json.loads((root / 'artifacts' / previous_release / 'build-info.json').read_text())
     assert native['libvlc.so'] != previous['native_sha256']['libvlc.so']
-    # Stable codec, medialibrary and C++ runtime payloads stay identical.
+    # Medialibrary and C++ runtime payloads stay identical.
     assert native['libmla.so'] == previous['native_sha256']['libmla.so']
     assert native['libc++_shared.so'] == previous['native_sha256']['libc++_shared.so']
     diagnostic_previous = json.loads((root / 'artifacts/pause-diag1/build-info.json').read_text())
@@ -107,6 +116,8 @@ info = {
     'package': 'org.videolan.vlc.aaudio', 'version_name': version_name,
     'version_code': version_code, 'abi': 'arm64-v8a', 'core_version': '3.0.25',
     'native_sha256': native, 'updates_previous_personal_build': True,
+    'static_plugin_count': len(plugin_manifest),
+    'static_plugin_manifest_sha256': hashlib.sha256(plugin_manifest_path.read_bytes()).hexdigest(),
     'purpose': 'VLC 4 shared output clock and native AudioTrack position reports on VLC 3 stable core',
     'diagnostic_window_seconds': 5, 'max_samples_per_resume_per_stage': 32,
     'max_audio_correction_events_per_resume': 48,
@@ -118,12 +129,11 @@ info = {
     'fork_branch': 'android/3.7.2-v4-clock',
     'checks': ['Release assembly and lint', 'APK signature v2', 'same signing certificate',
                'increased version code', '16KB ZIP alignment', 'arm64 ELF',
-               'custom native library hashes', 'diagnostic and resume fix markers', 'unchanged medialibrary/runtime',
+               'custom native library hashes', 'shared clock, audio feedback and video deadline markers',
+               'static plugins refreshed from current build archives', 'unchanged medialibrary/runtime',
                'original AudioTrack source reproduces retained-queue stall', 'fixed writer resumes without new data: 20 runs, ASan/UBSan',
                'non-blocking AudioTrack write checks full internal buffer',
-               'phone log proved a 383 ms write call blocked after Bluetooth resume',
-               'resume recovery defers late flush and early silence in the real aout decision path',
-               'normal destructive correction remains active outside resume recovery',
+               'legacy compatibility path: resume recovery defers flush/silence; ordinary correction remains active',
                'vendor write stall cannot hold the AudioTrack producer lock',
                'partial staged AudioTrack write exits cleanly on stop',
                'Actual VLC 4 shared clock and input/audio lifecycle tests under ASan/UBSan',
@@ -133,4 +143,5 @@ info = {
     'device_tested': False,
 }
 (artifacts / 'build-info.json').write_text(json.dumps(info, ensure_ascii=False, indent=2) + '\n')
+(artifacts / 'static-plugin-manifest.json').write_bytes(plugin_manifest_path.read_bytes())
 print(json.dumps(info, ensure_ascii=False, indent=2))

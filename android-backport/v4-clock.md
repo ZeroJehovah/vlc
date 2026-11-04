@@ -61,6 +61,11 @@ Build with `build-v4-clock1.init.gradle` and package with
 `python3 package-v4-clock.py` from the workspace root after installing and
 relinking the native libraries. The application ID and signing identity are
 the same as the previous personal builds; version code is 13070209.
+`link-native.sh` refreshes the allowlisted static plugins from the current
+build archives into `ndk/static-plugins`. Do not recursively link the install
+tree: it can contain both old renamed archives and newly installed category
+subdirectories. The APK check requires the new AudioTrack timing marker,
+rejects the old fix6 marker, and verifies plugin and packaged library hashes.
 
 Official preview builds: <https://artifacts.videolan.org/vlc-android/nightly-arm64-v4/>.
 The regular nightly channel uses `nightly-arm64/`; the app's nightly updater
