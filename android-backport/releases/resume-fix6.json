@@ -47,5 +47,8 @@
     "packaged logger service declares dataSync and specialUse",
     "logger repair code in DEX"
   ],
-  "device_tested": false
+  "device_tested": true,
+  "device_result": "failed: pause/resume increases audible latency; seek restores normal sync",
+  "device_log_date": "2026-11-04T21:59:09+08:00",
+  "superseded_hypothesis": "Pause cache translation alone is insufficient; old code already reset position estimates."
 }
