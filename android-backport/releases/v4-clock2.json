@@ -50,5 +50,8 @@
     "packaged logger service declares dataSync and specialUse",
     "logger repair code in DEX"
   ],
-  "device_tested": false
+  "device_tested": true,
+  "device_result": "User confirmed normal functions, continuous video/audio and no stutter; reviewed 2026-11-05 09:01 log supports successful reopen, seek and pause/resume",
+  "device_validation": "../validation/v4-clock2-20261105.md",
+  "daily_use_recommendation": "Upgrade to v4-clock3 for the separately reproduced EOF drain deadlock repair; v4-clock3 still needs phone confirmation"
 }

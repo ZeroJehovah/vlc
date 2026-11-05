@@ -1,6 +1,10 @@
 # VLC 4 output clock backport
 
-Branch: `android/3.7.2-v4-clock`. Integrated experimental build; no phone result yet.
+Branch: `android/3.7.2-v4-clock`. The user confirmed normal video/audio,
+functions and no stutter with v4-clock2 on 2026-11-05. The log review and
+follow-up EOF finding are recorded in [device validation](validation/v4-clock2-20261105.md).
+The final v4-clock3 candidate retains that clock algorithm and repairs EOF
+draining; this new APK still requires phone confirmation.
 
 The clock algorithm (`src/clock/clock*`, `include/vlc_clock.h`, `include/vlc_vector.h`)
 comes from official VLC commit `c6d1df39c7a52ff2caa582521ca61db081fa525e`.
@@ -57,10 +61,10 @@ Expected diagnostic markers:
 `AudioTrack source=timestamp` (or `raw-head`),
 `feedback system_us=...`, `video_clock attached=1`, and `video media_us=...`.
 
-Build with `build-v4-clock2.init.gradle` and package with
+Build with `build-v4-clock3.init.gradle` and package with
 `python3 package-v4-clock.py` from the workspace root after installing and
 relinking the native libraries. The application ID and signing identity are
-the same as the previous personal builds; version code is 13070210.
+the same as the previous personal builds; version code is 13070211.
 `link-native.sh` refreshes the allowlisted static plugins from the current
 build archives into `ndk/static-plugins`. Do not recursively link the install
 tree: it can contain both old renamed archives and newly installed category
@@ -74,6 +78,15 @@ owner. The clock is now attached again after creation and before the decoder
 thread starts. Without that attachment, raw media PTS were compared with the
 Android system monotonic clock and every frame was discarded as late by several
 days.
+
+Revision 3 fixes an independently reproduced AudioTrack EOF drain deadlock.
+The draining decoder calls `Flush(wait=true)` after queuing its final PCM.
+The staging writer must remain enabled until both the circular queue and
+in-flight staging are empty; only then may flush block writes and invalidate
+their generation. Seek retains immediate invalidation. The actual-module test
+`test-audiotrack-drain.sh` reproduces the old stall, then checks 20 successful
+drains containing partial writes and preserves pause across immediate seeks.
+No pause/resume clock, subtitle or display scheduling code changed in revision 3.
 
 Official preview builds: <https://artifacts.videolan.org/vlc-android/nightly-arm64-v4/>.
 The regular nightly channel uses `nightly-arm64/`; the app's nightly updater

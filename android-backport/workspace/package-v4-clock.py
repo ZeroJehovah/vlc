@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign and verify the shared output-clock experiment, retaining earlier APKs."""
+"""Sign and verify the personal output-clock build, retaining earlier APKs."""
 import hashlib
 import json
 import os
@@ -15,10 +15,10 @@ subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', 'modules', 'src', 'inclu
 core_source_commit = subprocess.check_output(
     ['git', 'log', '-1', '--format=%H', '--', 'modules', 'src', 'include'],
     cwd=core_repo, text=True).strip()
-release = os.environ.get('VLC_RELEASE_TAG', 'v4-clock2')
+release = os.environ.get('VLC_RELEASE_TAG', 'v4-clock3')
 version_name = '3.7.2-' + release
-version_code = int(os.environ.get('VLC_VERSION_CODE', '13070210'))
-previous_release = os.environ.get('VLC_PREVIOUS_RELEASE', 'v4-clock1')
+version_code = int(os.environ.get('VLC_VERSION_CODE', '13070211'))
+previous_release = os.environ.get('VLC_PREVIOUS_RELEASE', 'v4-clock2')
 artifacts = root / 'artifacts' / release
 artifacts.mkdir(parents=True, exist_ok=True)
 source = root / ('app-stable/application/app/build/outputs/apk/release/VLC-Android-' +
@@ -83,9 +83,11 @@ with zipfile.ZipFile(apk) as package:
                    b'[pause-diag] backend_play', b'3.0.25 Vetinari',
                    b'Android AAudio output (VLC 3 backport)',
                    b'[v4-clock] enabled master=',
+                   b'[v4-clock] AudioTrack drained queued audio',
                    b'[v4-clock] vout clock attached after decoder open'):
         assert marker in core, marker
     previous = json.loads((root / 'artifacts' / previous_release / 'build-info.json').read_text())
+    assert version_code > previous['version_code'], 'versionCode must allow an upgrade'
     assert native['libvlc.so'] != previous['native_sha256']['libvlc.so']
     # Medialibrary and C++ runtime payloads stay identical.
     assert native['libmla.so'] == previous['native_sha256']['libmla.so']
@@ -138,6 +140,7 @@ info = {
                'legacy compatibility path: resume recovery defers flush/silence; ordinary correction remains active',
                'vendor write stall cannot hold the AudioTrack producer lock',
                'partial staged AudioTrack write exits cleanly on stop',
+               'EOF drains all partial staged PCM writes: 20 runs, ASan/UBSan; seek flush preserves pause',
                'Actual VLC 4 shared clock and input/audio lifecycle tests under ASan/UBSan',
                'Native AudioTrack timing: stale/unsent rejection, raw-head fallback and frame counter wrap',
                'Rate changes with queued PCM, pause and paused seek tests',

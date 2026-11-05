@@ -1,8 +1,10 @@
-# VLC Android 3.7.2 共享输出时钟移植实验
+# VLC Android 3.7.2 共享输出时钟个人构建
 
 当前工作分支：`android/3.7.2-v4-clock`；旧实验保留在 `android/3.7.2-resume-fix`。这是基于 LibVLC 3.0.25 的个人构建，当前手机为 Redmi K50 Ultra、Android 13 / MIUI 14。
 
 fix6 已经真机测试失败：恢复后仍有明显延迟。当前改为移植 VLC 4 共享输出时钟，接入音频位置反馈、视频显示日期及字幕时间域，保留 3.x 应用、解码器和字幕/截图实现。具体范围、测试与限制见 [v4-clock 说明](v4-clock.md)。下面的 fix1–fix6 内容是历史记录，不能作为当前版本已修复的证据。
+
+`v4-clock2` 已于 2026-11-05 通过用户真机测试，视频、音频与功能均正常且无卡顿；日志复核见 [验证记录](validation/v4-clock2-20261105.md)。收尾代码检查额外发现自然播放结束时 AudioTrack 排空等待的死锁，`v4-clock3` 修复了该顺序，暂停恢复时钟算法保持不变。当前交付为 `3.7.2-v4-clock3`、versionCode `13070211`；新包仍需补测自然结束及自动下一集。
 
 ## 既有实验记录
 
@@ -93,14 +95,14 @@ JNI 补丁中的 `LOCAL_ADDITIONAL_DEPENDENCIES` 仍记录插件归档依赖，�
 cd /home/ubuntu/vlc-aaudio/app-stable
 JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 \
   ../toolchain/gradle-9.3.1/bin/gradle \
-  -I ../build-v4-clock2.init.gradle \
+  -I ../build-v4-clock3.init.gradle \
   -Pandroid.aapt2FromMavenOverride=/home/ubuntu/vlc-aaudio/toolchain/host-tools/aapt2 \
   :application:app:assembleRelease --console=plain --max-workers=3
 cd /home/ubuntu/vlc-aaudio
 python3 package-v4-clock.py
 ```
 
-打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前实验包：`3.7.2-v4-clock2`、versionCode `13070210`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
+打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前收尾包：`3.7.2-v4-clock3`、versionCode `13070211`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。已通过真机测试的 v4-clock2 APK 与原始打包记录保留在旧交付目录，不重新签名或覆盖。
 
 ## 验证
 
@@ -109,6 +111,7 @@ cd /home/ubuntu/vlc-aaudio/libvlcjni/vlc
 sh android-backport/tests/test-output-clock.sh
 sh android-backport/tests/test-audiotrack-resume.sh
 sh android-backport/tests/test-audiotrack-write-lock.sh
+sh android-backport/tests/test-audiotrack-drain.sh
 sh android-backport/tests/test-aout-resume-recovery.sh
 cd /home/ubuntu/vlc-aaudio
 sh test-aaudio.sh
@@ -119,4 +122,10 @@ sh test-logger/run.sh
 
 手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。还应测试暂停期间跳转、播放中跳转、字幕及截图。新路径标记为 `[v4-clock] enabled master=1 native_timing=1`、`AudioTrack source=timestamp` 或 `raw-head`、`feedback system_us=`、`video_clock attached=1`、`video media_us=`。同时用正脸说话画面确认声音连续、画面流畅且口型没有明显错位。
 
-`releases/resume-fix4.json` 和 `releases/resume-fix6.json` 保留旧构建及真机失败记录；`releases/resume-fix5.json` 记录用户否决的“画面等待”方案。`releases/v4-clock1.json` 记录首版真机视频冻结问题；`releases/v4-clock2.json` 保存当前 APK 的 SHA-256、原生库哈希、播放源码提交和自动校验项目。APK 本身保存在构建工作区 `artifacts/v4-clock2/`；`device_tested` 为 `false`，必须由手机实测决定是否改善。
+`releases/resume-fix4.json` 和 `releases/resume-fix6.json` 保留旧构建及真机失败记录；`releases/resume-fix5.json` 记录用户否决的“画面等待”方案。`releases/v4-clock1.json` 记录首版真机视频冻结问题；`releases/v4-clock2.json` 保存已测试 APK 的哈希与真机结果；`releases/v4-clock3.json` 保存收尾 APK 的哈希与自动验证。安装包保存在构建工作区 `artifacts/v4-clock3/`，新包 `device_tested=false`，不将 v4-clock2 的手机结论自动视作新包已验证。
+
+## 长期保存与使用
+
+固定源码标签为 `android-3.7.2-v4-clock3`。保存同目录的签名 APK、`SHA256SUMS`、构建元数据、源码改动包与 Git bundle，便于恢复和核对；Git bundle 以前述 LibVLC 3.0.25 官方提交为前提，包含全部后续 Android 和自定义提交。完整恢复还需要应用/JNI 官方基线，以及单独安全保管的签名身份。
+
+日常继续选择已经测试的 AudioTrack。停止调试记录，并在高级设置关闭“详细日志/Verbose”；以后遇到问题可重新启用。原有“安装每日构建”仍指向官方普通 nightly 通道，不能更新本个人 fork，且官方包不携带本次移植。
