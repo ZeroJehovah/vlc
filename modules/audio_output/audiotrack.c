@@ -2454,25 +2454,26 @@ Flush( audio_output_t *p_aout, bool b_wait )
         return;
     }
 
-    /* Stop staging new writes and invalidate a chunk that may already have
-     * been copied out by the writer. */
-    p_sys->b_flushing = true;
-    p_sys->i_write_generation++;
-    vlc_cond_signal( &p_sys->thread_cond );
-
     if( b_wait )
     {
+        /* EOF must let the writer consume every queued and staged sample.
+         * Blocking or invalidating writes here deadlocks the drain below. */
+        vlc_cond_signal( &p_sys->thread_cond );
         while( !p_sys->b_error
             && ( p_sys->circular.i_read != p_sys->circular.i_write
               || p_sys->i_samples_inflight != 0 ) )
             vlc_cond_wait( &p_sys->aout_cond, &p_sys->lock );
         if( p_sys->b_error )
         {
-            p_sys->b_flushing = false;
             vlc_mutex_unlock( &p_sys->lock );
             return;
         }
+        msg_Dbg( p_aout, "[v4-clock] AudioTrack drained queued audio" );
     }
+    /* Quiesce writes only after EOF draining, or immediately for a seek. */
+    p_sys->b_flushing = true;
+    p_sys->i_write_generation++;
+    vlc_cond_signal( &p_sys->thread_cond );
     vlc_mutex_unlock( &p_sys->lock );
 
     vlc_mutex_lock( &p_sys->write_lock );
