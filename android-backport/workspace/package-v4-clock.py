@@ -7,6 +7,7 @@ import pathlib
 import re
 import subprocess
 import zipfile
+import xml.etree.ElementTree as ET
 
 root = pathlib.Path(__file__).resolve().parent
 core_repo = root / 'libvlcjni/vlc'
@@ -24,6 +25,16 @@ artifacts.mkdir(parents=True, exist_ok=True)
 source = root / ('app-stable/application/app/build/outputs/apk/release/VLC-Android-' +
                  version_name + '-all.apk')
 assert source.is_file(), source
+lint_path = root / 'app-stable/application/app/build/reports/lint-results-release.xml'
+assert lint_path.is_file() and lint_path.stat().st_mtime_ns >= source.stat().st_mtime_ns, \
+    'Run assembleRelease and lintRelease before packaging; do not reuse a stale lint report'
+lint_issues = ET.parse(lint_path).getroot().findall('issue')
+lint = {
+    'errors': sum(i.get('severity') in ('Error', 'Fatal') for i in lint_issues),
+    'warnings': sum(i.get('severity') == 'Warning' for i in lint_issues),
+    'error_ids': sorted({i.get('id') for i in lint_issues if i.get('severity') in ('Error', 'Fatal')}),
+    'abort_on_error': False,
+}
 tool = root / 'toolchain'
 sdk = tool / 'android-sdk/build-tools/36.0.0'
 aligned = artifacts / ('VLC-' + version_name + '-arm64-v8a-unsigned-aligned.apk')
@@ -130,7 +141,8 @@ info = {
     'core_source_commit': core_source_commit,
     'upstream_clock_commit': 'c6d1df39c7a52ff2caa582521ca61db081fa525e',
     'fork_branch': 'android/3.7.2-v4-clock',
-    'checks': ['Release assembly and lint', 'APK signature v2', 'same signing certificate',
+    'lint': lint,
+    'checks': ['Release assembly; fresh lint report recorded (not necessarily zero findings)', 'APK signature v2', 'same signing certificate',
                'increased version code', '16KB ZIP alignment', 'arm64 ELF',
                'custom native library hashes', 'shared clock, audio feedback and video deadline markers',
                'hardware decoder vout is reattached after output clock creation',

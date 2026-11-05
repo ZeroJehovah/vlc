@@ -97,7 +97,7 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 \
   ../toolchain/gradle-9.3.1/bin/gradle \
   -I ../build-v4-clock3.init.gradle \
   -Pandroid.aapt2FromMavenOverride=/home/ubuntu/vlc-aaudio/toolchain/host-tools/aapt2 \
-  :application:app:assembleRelease --console=plain --max-workers=3
+  :application:app:assembleRelease :application:app:lintRelease --console=plain --max-workers=3
 cd /home/ubuntu/vlc-aaudio
 python3 package-v4-clock.py
 ```
@@ -123,6 +123,8 @@ sh test-logger/run.sh
 手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。还应测试暂停期间跳转、播放中跳转、字幕及截图。新路径标记为 `[v4-clock] enabled master=1 native_timing=1`、`AudioTrack source=timestamp` 或 `raw-head`、`feedback system_us=`、`video_clock attached=1`、`video media_us=`。同时用正脸说话画面确认声音连续、画面流畅且口型没有明显错位。
 
 `releases/resume-fix4.json` 和 `releases/resume-fix6.json` 保留旧构建及真机失败记录；`releases/resume-fix5.json` 记录用户否决的“画面等待”方案。`releases/v4-clock1.json` 记录首版真机视频冻结问题；`releases/v4-clock2.json` 保存已测试 APK 的哈希与真机结果；`releases/v4-clock3.json` 保存收尾 APK 的哈希与自动验证。安装包保存在构建工作区 `artifacts/v4-clock3/`，新包 `device_tested=false`，不将 v4-clock2 的手机结论自动视作新包已验证。
+
+完整 `lintRelease` 已执行，报告仍有收尾前已有的 6 个 Android TV manifest 错误与 9 个警告；应用上游的 `abortOnError=false` 允许构建继续，因此不能把 Gradle 成功当作 lint 零问题。打包会检查报告新鲜度并记录实际数量；报告随本地交付保存，详细范围见真机验证文档。
 
 ## 长期保存与使用
 
