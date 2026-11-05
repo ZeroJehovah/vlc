@@ -93,14 +93,14 @@ JNI 补丁中的 `LOCAL_ADDITIONAL_DEPENDENCIES` 仍记录插件归档依赖，�
 cd /home/ubuntu/vlc-aaudio/app-stable
 JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 \
   ../toolchain/gradle-9.3.1/bin/gradle \
-  -I ../build-v4-clock1.init.gradle \
+  -I ../build-v4-clock2.init.gradle \
   -Pandroid.aapt2FromMavenOverride=/home/ubuntu/vlc-aaudio/toolchain/host-tools/aapt2 \
   :application:app:assembleRelease --console=plain --max-workers=3
 cd /home/ubuntu/vlc-aaudio
 python3 package-v4-clock.py
 ```
 
-打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前实验包：`3.7.2-v4-clock1`、versionCode `13070209`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
+打包使用本机 `apksigner`，签名身份从私有 `toolchain/signing/` 读取。公开保存的旧证书摘要只用于验证覆盖升级身份，没有私钥。当前实验包：`3.7.2-v4-clock2`、versionCode `13070210`、包名 `org.videolan.vlc.aaudio`、arm64-v8a。
 
 ## 验证
 
@@ -119,4 +119,4 @@ sh test-logger/run.sh
 
 手机测试请选择 **AudioTrack**，启用调试日志，暂停约 5 秒后继续，重复 3–5 次，每次继续后播放至少 5 秒，再停止记录并导出日志。还应测试暂停期间跳转、播放中跳转、字幕及截图。新路径标记为 `[v4-clock] enabled master=1 native_timing=1`、`AudioTrack source=timestamp` 或 `raw-head`、`feedback system_us=`、`video_clock attached=1`、`video media_us=`。同时用正脸说话画面确认声音连续、画面流畅且口型没有明显错位。
 
-`releases/resume-fix4.json` 和 `releases/resume-fix6.json` 保留旧构建及真机失败记录；`releases/resume-fix5.json` 记录用户否决的“画面等待”方案。`releases/v4-clock1.json` 保存本次 APK 的 SHA-256、原生库哈希、播放源码提交和自动校验项目。APK 本身保存在构建工作区 `artifacts/v4-clock1/`；`device_tested` 为 `false`，必须由手机实测决定是否改善。
+`releases/resume-fix4.json` 和 `releases/resume-fix6.json` 保留旧构建及真机失败记录；`releases/resume-fix5.json` 记录用户否决的“画面等待”方案。`releases/v4-clock1.json` 记录首版真机视频冻结问题；`releases/v4-clock2.json` 保存当前 APK 的 SHA-256、原生库哈希、播放源码提交和自动校验项目。APK 本身保存在构建工作区 `artifacts/v4-clock2/`；`device_tested` 为 `false`，必须由手机实测决定是否改善。

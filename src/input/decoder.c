@@ -2040,6 +2040,19 @@ static decoder_t *decoder_New( vlc_object_t *p_parent, input_thread_t *p_input,
             DeleteDecoder( p_dec );
             return NULL;
         }
+
+        /* Some hardware decoders create their vout synchronously from the
+         * module Open callback, before CreateDecoder() returns. Reattach the
+         * newly-created output clock before starting the decoder thread so the
+         * vout does not retain raw media PTS in its system-time domain. */
+        if( p_dec->p_owner->output_clock && p_dec->p_owner->p_vout )
+        {
+            vout_SetClock( p_dec->p_owner->p_vout,
+                           p_dec->p_owner->output_clock );
+            vout_SetClockRate( p_dec->p_owner->p_vout,
+                (double)INPUT_RATE_DEFAULT / input_clock_GetRate( p_clock ) );
+            msg_Info( p_dec, "[v4-clock] vout clock attached after decoder open" );
+        }
     }
     assert( p_dec->fmt_out.i_cat != UNKNOWN_ES );
 

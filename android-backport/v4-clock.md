@@ -57,15 +57,23 @@ Expected diagnostic markers:
 `AudioTrack source=timestamp` (or `raw-head`),
 `feedback system_us=...`, `video_clock attached=1`, and `video media_us=...`.
 
-Build with `build-v4-clock1.init.gradle` and package with
+Build with `build-v4-clock2.init.gradle` and package with
 `python3 package-v4-clock.py` from the workspace root after installing and
 relinking the native libraries. The application ID and signing identity are
-the same as the previous personal builds; version code is 13070209.
+the same as the previous personal builds; version code is 13070210.
 `link-native.sh` refreshes the allowlisted static plugins from the current
 build archives into `ndk/static-plugins`. Do not recursively link the install
 tree: it can contain both old renamed archives and newly installed category
 subdirectories. The APK check requires the new AudioTrack timing marker,
 rejects the old fix6 marker, and verifies plugin and packaged library hashes.
+
+Revision 2 fixes the vout initialization order used by Android MediaCodec.
+The hardware decoder can create its video output from the module `Open`
+callback, before the shared output clock has been assigned to the decoder
+owner. The clock is now attached again after creation and before the decoder
+thread starts. Without that attachment, raw media PTS were compared with the
+Android system monotonic clock and every frame was discarded as late by several
+days.
 
 Official preview builds: <https://artifacts.videolan.org/vlc-android/nightly-arm64-v4/>.
 The regular nightly channel uses `nightly-arm64/`; the app's nightly updater

@@ -15,10 +15,10 @@ subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', 'modules', 'src', 'inclu
 core_source_commit = subprocess.check_output(
     ['git', 'log', '-1', '--format=%H', '--', 'modules', 'src', 'include'],
     cwd=core_repo, text=True).strip()
-release = os.environ.get('VLC_RELEASE_TAG', 'v4-clock1')
+release = os.environ.get('VLC_RELEASE_TAG', 'v4-clock2')
 version_name = '3.7.2-' + release
-version_code = int(os.environ.get('VLC_VERSION_CODE', '13070209'))
-previous_release = os.environ.get('VLC_PREVIOUS_RELEASE', 'resume-fix6')
+version_code = int(os.environ.get('VLC_VERSION_CODE', '13070210'))
+previous_release = os.environ.get('VLC_PREVIOUS_RELEASE', 'v4-clock1')
 artifacts = root / 'artifacts' / release
 artifacts.mkdir(parents=True, exist_ok=True)
 source = root / ('app-stable/application/app/build/outputs/apk/release/VLC-Android-' +
