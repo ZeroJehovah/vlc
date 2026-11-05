@@ -82,7 +82,8 @@ with zipfile.ZipFile(apk) as package:
                    b'[pause-diag] action=insert_silence', b'[pause-diag] action=flush_late',
                    b'[pause-diag] backend_play', b'3.0.25 Vetinari',
                    b'Android AAudio output (VLC 3 backport)',
-                   b'[v4-clock] enabled master='):
+                   b'[v4-clock] enabled master=',
+                   b'[v4-clock] vout clock attached after decoder open'):
         assert marker in core, marker
     previous = json.loads((root / 'artifacts' / previous_release / 'build-info.json').read_text())
     assert native['libvlc.so'] != previous['native_sha256']['libvlc.so']
