@@ -131,6 +131,7 @@ info = {
     'checks': ['Release assembly and lint', 'APK signature v2', 'same signing certificate',
                'increased version code', '16KB ZIP alignment', 'arm64 ELF',
                'custom native library hashes', 'shared clock, audio feedback and video deadline markers',
+               'hardware decoder vout is reattached after output clock creation',
                'static plugins refreshed from current build archives', 'unchanged medialibrary/runtime',
                'original AudioTrack source reproduces retained-queue stall', 'fixed writer resumes without new data: 20 runs, ASan/UBSan',
                'non-blocking AudioTrack write checks full internal buffer',
